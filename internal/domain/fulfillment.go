@@ -158,6 +158,17 @@ func NormalizeMembershipEnvelope(payload []byte, now time.Time) (*MembershipObse
 	if providerCode != 200 {
 		return nil, contractError("会员状态响应业务码不是 200")
 	}
+	if rawData, ok := root["data"]; ok && strings.TrimSpace(string(rawData)) == "null" {
+		var message string
+		if json.Unmarshal(root["message"], &message) == nil &&
+			strings.TrimSpace(message) == "您还没有订阅,允许您生成订阅链接" {
+			return &MembershipObservation{
+				ProviderCode: 200,
+				AccountType:  TierFree,
+				ObservedAt:   utcNow(now),
+			}, nil
+		}
+	}
 
 	data, err := requireJSONObject(root["data"], "会员状态响应缺少 data")
 	if err != nil {

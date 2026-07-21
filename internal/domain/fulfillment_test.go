@@ -116,6 +116,26 @@ func TestNormalizeMembershipEnvelopeTreatsNullExpiriesAsFree(t *testing.T) {
 	}
 }
 
+func TestNormalizeMembershipEnvelopeTreatsExplicitNoSubscriptionAsFree(t *testing.T) {
+	t.Parallel()
+	now := mustTime(t, "2026-07-21T06:36:14Z")
+	observation, err := NormalizeMembershipEnvelope([]byte(`{
+		"code": 200,
+		"data": null,
+		"message": "您还没有订阅,允许您生成订阅链接"
+	}`), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if observation.ProviderCode != 200 || observation.AccountType != TierFree {
+		t.Fatalf("unexpected normalized account: %+v", observation)
+	}
+	classification, err := ClassifyStartingMembership(observation)
+	if err != nil || classification != StartingMembershipFree {
+		t.Fatalf("classification = %q, %v", classification, err)
+	}
+}
+
 func TestNormalizeMembershipEnvelopeUsesExpiresAtFallback(t *testing.T) {
 	t.Parallel()
 	now := mustTime(t, "2026-07-21T06:02:58Z")
