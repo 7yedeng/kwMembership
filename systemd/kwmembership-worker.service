@@ -1,0 +1,21 @@
+[Unit]
+Description=kwMembership Go processor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@@RUN_USER@@
+Group=@@RUN_USER@@
+WorkingDirectory=@@INSTALL_DIR@@
+EnvironmentFile=@@ENV_FILE@@
+ExecStart=@@INSTALL_DIR@@/bin/kwmembership-worker
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=@@KAWANG_DATA_DIR@@
+
+[Install]
+WantedBy=multi-user.target
