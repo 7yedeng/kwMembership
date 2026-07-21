@@ -89,6 +89,60 @@ func TestNormalizeMembershipEnvelopeAndConfirmation(t *testing.T) {
 	}
 }
 
+func TestNormalizeMembershipEnvelopeTreatsNullExpiriesAsFree(t *testing.T) {
+	t.Parallel()
+	now := mustTime(t, "2026-07-21T06:02:58Z")
+	observation, err := NormalizeMembershipEnvelope([]byte(`{
+		"code": 200,
+		"data": {
+			"account_type": "plus",
+			"currency": "USD",
+			"auto_renew": false,
+			"is_overdue": false,
+			"is_delinquent": false,
+			"expire_time": null,
+			"expires_at": null
+		}
+	}`), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if observation.ProviderAccountType != "plus" || observation.AccountType != TierFree {
+		t.Fatalf("unexpected normalized account: %+v", observation)
+	}
+	classification, err := ClassifyStartingMembership(observation)
+	if err != nil || classification != StartingMembershipFree {
+		t.Fatalf("classification = %q, %v", classification, err)
+	}
+}
+
+func TestNormalizeMembershipEnvelopeUsesExpiresAtFallback(t *testing.T) {
+	t.Parallel()
+	now := mustTime(t, "2026-07-21T06:02:58Z")
+	observation, err := NormalizeMembershipEnvelope([]byte(`{
+		"code": 200,
+		"data": {
+			"account_type": "plus",
+			"currency": "USD",
+			"auto_renew": true,
+			"is_overdue": false,
+			"is_delinquent": false,
+			"expire_time": null,
+			"expires_at": "2026-08-21 14:17:11"
+		}
+	}`), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if observation.AccountType != TierPlus || !observation.ExpireTimeFuture {
+		t.Fatalf("unexpected normalized account: %+v", observation)
+	}
+	classification, err := ClassifyStartingMembership(observation)
+	if err != nil || classification != StartingMembershipSubscribed {
+		t.Fatalf("classification = %q, %v", classification, err)
+	}
+}
+
 func TestNormalizeMembershipEnvelopeStrictErrors(t *testing.T) {
 	t.Parallel()
 	cases := []struct {

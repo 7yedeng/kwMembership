@@ -173,9 +173,23 @@ func NormalizeMembershipEnvelope(payload []byte, now time.Time) (*MembershipObse
 		return nil, contractError("会员状态 account_type 未知或缺失")
 	}
 
-	expireTimeRaw, err := nullableString(data["expire_time"], "expire_time")
+	expireTimeJSON, hasExpireTime := data["expire_time"]
+	expiresAtJSON, hasExpiresAt := data["expires_at"]
+	expireTimeRaw, err := nullableString(expireTimeJSON, "expire_time")
 	if err != nil {
 		return nil, err
+	}
+	expiresAtRaw, err := nullableString(expiresAtJSON, "expires_at")
+	if err != nil {
+		return nil, err
+	}
+	if expireTimeRaw == "" {
+		expireTimeRaw = expiresAtRaw
+	}
+	// The provider can retain a paid account_type after expiry; no expiry in
+	// either field is its authoritative free-account signal.
+	if hasExpireTime && hasExpiresAt && isJSONNull(expireTimeJSON) && isJSONNull(expiresAtJSON) {
+		accountType = TierFree
 	}
 	currency, err := nullableString(data["currency"], "currency")
 	if err != nil {
