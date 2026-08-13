@@ -15,7 +15,6 @@ const (
 	GPTCheckoutURL = "https://spacexcard.com/api/v1/gpt/checkout"
 	GPTCookieURL   = "https://spacexcard.com/api/v1/gpt/session-to-cookie"
 	maxGPTResponse = 256 << 10
-	cookieBaseName = "__Secure-next-auth.session-token"
 )
 
 type GPTClient struct{ http *http.Client }
@@ -66,16 +65,33 @@ func (c *GPTClient) CheckoutURL(ctx context.Context, session json.RawMessage, to
 	if err != nil {
 		return "", err
 	}
-	var checkout struct {
-		Code *int `json:"code"`
-		Data struct {
-			Link string `json:"link"`
-		} `json:"data"`
+	var envelope map[string]json.RawMessage
+	if json.Unmarshal(checkoutRaw, &envelope) != nil || envelope == nil {
+		return "", fail("CHECKOUT_BROKER_RESPONSE_INVALID", "checkout broker response is invalid", true)
 	}
-	if json.Unmarshal(checkoutRaw, &checkout) != nil || checkout.Code == nil || *checkout.Code != 0 {
-		return "", fail("CHECKOUT_BROKER_CONTRACT_DRIFT", "checkout broker response contract drift", true)
+	var code int
+	codeRaw, ok := envelope["code"]
+	if !ok || json.Unmarshal(codeRaw, &code) != nil {
+		return "", fail("CHECKOUT_BROKER_CODE_INVALID", "checkout broker response code is invalid", true)
 	}
-	return validateCheckoutURL(checkout.Data.Link)
+	if !gptSuccessCode(code) {
+		return "", fail("CHECKOUT_BROKER_BUSINESS_REJECTED", "checkout broker rejected the request", false)
+	}
+	var data map[string]json.RawMessage
+	dataRaw, ok := envelope["data"]
+	if !ok || json.Unmarshal(dataRaw, &data) != nil || data == nil {
+		return "", fail("CHECKOUT_BROKER_LINK_MISSING", "checkout broker link is missing", true)
+	}
+	var link string
+	linkRaw, ok := data["link"]
+	if !ok || json.Unmarshal(linkRaw, &link) != nil || strings.TrimSpace(link) == "" {
+		return "", fail("CHECKOUT_BROKER_LINK_MISSING", "checkout broker link is missing", true)
+	}
+	validated, err := validateCheckoutURL(link)
+	if err != nil {
+		return "", fail("CHECKOUT_BROKER_LINK_INVALID", "checkout broker link is outside the allowlist", true)
+	}
+	return validated, nil
 }
 
 func (c *GPTClient) SessionCookies(ctx context.Context, session json.RawMessage, token string) ([]SessionCookie, error) {
@@ -144,7 +160,9 @@ func validateCheckoutURL(value string) (string, error) {
 	if err != nil || parsed.Scheme != "https" || parsed.User != nil || parsed.Fragment != "" {
 		return "", fail("CHECKOUT_BROKER_CONTRACT_DRIFT", "checkout URL is invalid", true)
 	}
-	allowed := parsed.Host == "chatgpt.com" && (parsed.Path == "/checkout" || parsed.Path == "/checkout/" || regexp.MustCompile(`^/checkout/[A-Za-z0-9_-]+/?$`).MatchString(parsed.Path))
+	allowed := parsed.Host == "chatgpt.com" && (parsed.Path == "/checkout" || parsed.Path == "/checkout/" ||
+		regexp.MustCompile(`^/checkout/[A-Za-z0-9_-]+/?$`).MatchString(parsed.Path) ||
+		regexp.MustCompile(`^/checkout/openai_llc/(?:oaics_|cs_)[A-Za-z0-9_-]+/?$`).MatchString(parsed.Path))
 	allowed = allowed || parsed.Host == "pay.openai.com" && (regexp.MustCompile(`^/checkout/[A-Za-z0-9_-]+/?$`).MatchString(parsed.Path) || regexp.MustCompile(`^/(?:c/)?pay/[A-Za-z0-9_-]+/?$`).MatchString(parsed.Path))
 	if !allowed {
 		return "", fail("CHECKOUT_BROKER_CONTRACT_DRIFT", "checkout URL is outside the allowlist", true)
@@ -173,7 +191,7 @@ func normalizeCookieEnvelope(raw []byte, expectedEmail string) ([]SessionCookie,
 			Email string `json:"email"`
 		} `json:"data"`
 	}
-	if json.Unmarshal(raw, &envelope) != nil || envelope.Code == nil || *envelope.Code != 0 ||
+	if json.Unmarshal(raw, &envelope) != nil || envelope.Code == nil || !gptSuccessCode(*envelope.Code) ||
 		envelope.Data.Count == nil || *envelope.Data.Count != len(envelope.Data.Cookies) || len(envelope.Data.Cookies) == 0 {
 		return nil, fail("CONVERTER_CONTRACT_DRIFT", "session cookie response contract drift", true)
 	}
@@ -212,6 +230,10 @@ func normalizeCookieEnvelope(raw []byte, expectedEmail string) ([]SessionCookie,
 		})
 	}
 	return result, nil
+}
+
+func gptSuccessCode(code int) bool {
+	return code == 0 || code == http.StatusOK
 }
 
 func normalizeProviderEmail(value string) string {

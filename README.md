@@ -6,11 +6,11 @@ Go worker 负责：
 
 - 自动发现会员订单、校验 Session，并幂等创建履约；
 - 会员资格检查、账号串行锁、库存同步与卡片选择；
-- 调用 SpaceXCard 获取 Checkout 地址、Cookie、卡资料，并控制无界面 Chrome 完成结账；
+- 为每个付款阶段签发不可变命令、材料领取和危险动作 Permit，并通过本机协议交给 Python 执行器；
 - 资金准备、付款状态推进、未知结果对账与续费保护；
 - 将状态、错误码、版本、心跳和 Tick 直接写回 kwRedeem 数据库。
 
-kwRedeem 的 Node API 只保留后台展示、配置和 Webhook。会员自动化不依赖浏览器扩展，也不需要人工打开浏览器。
+kwRedeem 的 Node API 保留客户入口、Session 恢复、后台展示、配置和 Webhook。Go 是唯一工作流所有者；Python 只串行执行 Go 已授权的浏览器步骤，不能写业务状态或决定重试。当前默认仅启用无扣款 fixture，真实付款保持关闭。
 
 ## 本地运行教程
 
@@ -22,7 +22,7 @@ npm install
 npm run db:init
 ```
 
-本机需要安装 Google Chrome 或 Chromium。macOS 默认会自动发现 `/Applications/Google Chrome.app`；Linux 可检查：
+只有使用 `legacy-go` 诊断模式时才需要 Go 直接发现 Chrome。默认 Python fixture 不启动付款浏览器；live 模式由 Python Playwright 启动独立浏览器：
 
 ```bash
 google-chrome --version || chromium --version
@@ -37,9 +37,10 @@ cp .env.example .env
 bash scripts/build.sh
 bash scripts/check.sh
 bash scripts/start-worker.sh
+KWMEMBERSHIP_EXECUTOR_SECRET=<与 .env 相同的随机密钥> python3 -m python_executor
 ```
 
-`scripts/check.sh` 会确认它打开的是 kwRedeem 数据库、会员表完整，并实际启动一次 `about:blank` 无界面 Chrome 自检；不会获取处理租约、调用外部 Provider 或执行订单。
+`scripts/check.sh` 会确认它打开的是 kwRedeem 数据库且共享表完整；只有 `legacy-go` 模式会启动一次 `about:blank` Chrome 自检。检查不会获取订单或执行付款。
 
 启动 kwRedeem API 后，进入“会员履约 → 实施状态”，应看到：
 
@@ -56,8 +57,11 @@ kwMembership 的 `.env` 只需要指向 kwRedeem：
 
 ```dotenv
 KAWANG_PROJECT_ROOT=../kwRedeem
-# 自动发现失败时填写：
-# KWMEMBERSHIP_CHROME_PATH=/usr/bin/google-chrome
+KWMEMBERSHIP_CHECKOUT_EXECUTOR=python
+KWMEMBERSHIP_EXECUTOR_LISTEN=127.0.0.1:4312
+KWMEMBERSHIP_EXECUTOR_SECRET=<至少 32 位的独立随机密钥>
+KWMEMBERSHIP_PYTHON_EXECUTOR_MODE=fixture
+KWMEMBERSHIP_LIVE_PAYMENT_ENABLED=false
 ```
 
 Go 会从该目录的 `.env` 读取：
@@ -66,7 +70,7 @@ Go 会从该目录的 `.env` 读取：
 - `JWT_SECRET`：解密 kwRedeem 已保存的 Session、Provider 凭据和资金意图；
 - `MAINTENANCE_PATH`、`WORKER_POLL_MS`、`DEFAULT_REQUEST_TIMEOUT_MS`、`API_URL`。
 
-因此不需要 `SERVICE_TOKEN`、扩展 Token、绑定扩展、回调地址、第二套数据库或数据迁移。
+Go/Python 私有协议只监听回环 IP，并使用独立 Bearer 密钥。命令表不保存 Session、Cookie、PAN、CVV、付款链接或原始页面内容。
 
 `npm run db:init` 会在共享数据库中持久化首次启用 Go Intake 的时间水位线。Go 只自动接收水位线之后创建的新会员订单；历史订单不会在部署时批量重跑，需要时仍由 kwRedeem 后台逐单补建。
 
@@ -83,8 +87,9 @@ Go 会从该目录的 `.env` 读取：
 
 ```dotenv
 KAWANG_PROJECT_ROOT=/opt/kwRedeem
-# Debian/Ubuntu 常见路径；以实际安装为准
-KWMEMBERSHIP_CHROME_PATH=/usr/bin/google-chrome
+KWMEMBERSHIP_CHECKOUT_EXECUTOR=python
+KWMEMBERSHIP_EXECUTOR_LISTEN=127.0.0.1:4312
+KWMEMBERSHIP_EXECUTOR_SECRET=<至少 32 位的独立随机密钥>
 ```
 
 使用与 kwRedeem 相同的 Unix 用户安装，以保证两边可以安全访问同一个 SQLite/WAL 文件：
@@ -93,31 +98,60 @@ KWMEMBERSHIP_CHROME_PATH=/usr/bin/google-chrome
 sudo KWMEMBERSHIP_USER=<kwRedeem运行用户> bash scripts/install-systemd.sh
 ```
 
-安装器只创建 `kwmembership-worker.service`。更新时执行：
+安装器会创建 `kwmembership-worker.service` 和串行消费者
+`kwmembership-python-executor.service`，两者读取同一份受限环境文件。更新时执行：
 
 ```bash
 sudo bash scripts/update.sh
 ```
 
-SpaceX Card 交易 Webhook 仍指向 kwRedeem：
-
 ```text
 https://apikey.vsakura.top/api/webhooks/spacexcard/card-transactions
 ```
 
-付款 Gate 默认关闭。新执行器版本为 `go-headless-v1`；旧的 `checkout-v1` 扩展资格和自动范围不会被复用。先完成无扣款预检，再为 `go-headless-v1` 创建 Canary 与自动范围，最后从 kwRedeem 后台启用。
+付款 Gate 默认关闭。新适配器版本为 `python-session-card-checkout-v1`。Go 先检查订阅；发现自动续费时取消并重新查询，只有明确的 `free + auto-renew=false` 才继续。之后 Go 选择卡片、写资金边界、签发命令和 Permit；Python 通过本机协议一次领取 Session 和卡材料并返回结构化事实。`fixture` 只处理无扣款 preflight，遇到 payment 命令会以 `FIXTURE_PAYMENT_DISABLED` 失败关闭；`live` 适配器已实现受限浏览器协议，但仍需要显式设置 live 模式和上线 Gate、安装并验证浏览器依赖，且不会绕过 Go 的付款 Gate、Permit 或未知结果对账。
+
+Live 执行器依赖 Playwright。只在专用执行器主机安装依赖，不要在开发机打开真实付款：
+
+```bash
+python3 -m pip install -r python_executor/requirements.txt
+python3 -m playwright install chromium
+```
+
+### 私有虚拟显示与安全验证
+
+生产服务器使用 Xvfb 是因为 ChatGPT 对同一份有效 Session 接受普通 Chrome、但拒绝严格 headless Chrome。这个模式仍然是无人值守自动化：正常流程不需要管理员打开窗口，也不需要账号密码。Xvfb、x11vnc 和 noVNC 必须只监听服务器本机，不能把 5900/6080 端口暴露到公网。
+
+```dotenv
+KWMEMBERSHIP_VISIBLE_BROWSER=true
+KWMEMBERSHIP_HUMAN_CHALLENGE_TIMEOUT_MS=300000
+```
+
+```bash
+ssh -L 6080:127.0.0.1:6080 root@服务器地址
+# 本机浏览器打开：
+# http://127.0.0.1:6080/vnc.html?autoconnect=true&resize=scale
+```
+
+只有 Go 明确认出安全验证页并写入 `CHECKOUT_CHALLENGE_WAIT` 时，管理员才可通过 SSH 隧道访问 noVNC 完成验证。Go 只在重新识别到受支持的结账结构后继续；它不会自动绕过验证，也不会因虚拟显示模式削弱付款 Gate、页面许可或对账边界。
 
 ## 自动流程
 
 ```text
 订单 Session
 → Go 校验账号与库存
-→ Go 获取一次性 Checkout 地址和 Session Cookie
-→ Go 获取 SpaceXCard 卡资料与 kwRedeem 账单地址
-→ Go 无界面 Chrome 严格校验套餐、PH/PHP 价格和白名单控件
+→ Go 取消已有自动续费并重新确认 free + auto-renew=false
+→ Go 获取卡资料与账单地址，写入串行任务
+→ Python 一次领取 Session 和卡材料并校验 Plus / PH / PHP 页面合同
 → 每次可能产生授权的点击前写入 Permit 并快照卡交易
 → 提交后只进入对账，不会因超时盲目重提
 → 确认会员与卡交易后取消自动续费并写回后台
 ```
 
-遇到 CAPTCHA、3DS、短信或银行验证时，Go 会停止自动点击并在后台创建人工介入状态；它不会尝试绕过安全验证。
+每次执行和人工挑战共用固定五分钟硬截止，heartbeat 不能延长。遇到 CAPTCHA、3DS、短信或银行验证时会创建人工介入状态，不尝试绕过安全验证。
+
+### 实验性免托管密码登录预检
+
+只有经管理员明确选中的单笔履约可以进入 `CHECKOUT_LOGIN_READY`。Go 会打开一个全新的可视化无痕窗口并写入 `CHECKOUT_LOGIN_WAIT`；管理员通过上面的 SSH + noVNC 通道直接登录 ChatGPT，并手动进入 Plus 结账页。账号密码、MFA、Passkey 和浏览器 Cookie 不进入 kwRedeem、kwMembership 或普通日志。
+
+Go 只在浏览器内读取当前登录邮箱并与订单身份进行内存比对，然后执行既有的 Plus / PH / PHP / 价格区间和结账结构预检。成功后停在 `CHECKOUT_LOGIN_PREFLIGHT_PASSED`，不会进入 `FUNDING_READY`，不会读取卡资料、准备资金或授权支付。窗口关闭后登录上下文即销毁；该实验结果不能用于生产付款或 Canary 资格。

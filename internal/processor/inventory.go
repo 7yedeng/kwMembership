@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"kwmembership/internal/domain"
@@ -21,12 +22,13 @@ const (
 )
 
 type inventoryRun struct {
-	ID         string
-	Mode       string
-	Status     string
-	NextPage   int
-	Total      sql.NullInt64
-	Discovered int
+	ID          string
+	ProviderKey string
+	Mode        string
+	Status      string
+	NextPage    int
+	Total       sql.NullInt64
+	Discovered  int
 }
 
 type inventoryItem struct {
@@ -70,17 +72,18 @@ func (p *Processor) tickInventory(ctx context.Context) (processed bool, returned
 			return false, nil
 		}
 	}
-	allowed, err := p.acquireCircuit(ctx, "spacexcard_openapi", "default", now)
+	dependency, scope := cardPlatformCircuit(run.platformKey())
+	allowed, err := p.acquireCircuit(ctx, dependency, scope, now)
 	if err != nil {
 		return false, err
 	}
 	if !allowed {
-		return false, coded("SPACEXCARD_CIRCUIT_OPEN", "SpaceX Card dependency circuit is open")
+		return false, coded("CARD_PLATFORM_CIRCUIT_OPEN", "card platform dependency circuit is open")
 	}
-	client, err := p.spaceXClient(ctx)
+	client, err := p.cardPlatform(ctx, run.platformKey())
 	if err != nil {
 		persistErr := p.inventoryRunFailure(ctx, run.ID, err, now)
-		circuitErr := p.recordCircuitFailure(ctx, "spacexcard_openapi", "default", err, now)
+		circuitErr := p.recordCircuitFailure(ctx, dependency, scope, err, now)
 		if persistErr != nil {
 			return true, withCircuitAccounting(persistErr, circuitErr)
 		}
@@ -92,28 +95,35 @@ func (p *Processor) tickInventory(ctx context.Context) (processed bool, returned
 				return true, leaseErr
 			}
 			persistErr := p.inventoryRunFailure(ctx, run.ID, err, now)
-			circuitErr := p.recordCircuitFailure(ctx, "spacexcard_openapi", "default", err, now)
+			circuitErr := p.recordCircuitFailure(ctx, dependency, scope, err, now)
 			if persistErr != nil {
 				return true, withCircuitAccounting(persistErr, circuitErr)
 			}
 			return true, withCircuitAccounting(err, circuitErr)
 		}
 		return true, withCircuitAccounting(nil,
-			p.recordCircuitSuccess(ctx, "spacexcard_openapi", "default", now))
+			p.recordCircuitSuccess(ctx, dependency, scope, now))
 	}
 	if err := p.reconcileInventoryCard(ctx, client, run, item, now); err != nil {
 		if leaseErr := p.assertWorkAllowed(ctx); leaseErr != nil {
 			return true, leaseErr
 		}
 		persistErr := p.recordInventoryItemFailure(ctx, run, item, err, now)
-		circuitErr := p.recordCircuitFailure(ctx, "spacexcard_openapi", "default", err, now)
+		circuitErr := p.recordCircuitFailure(ctx, dependency, scope, err, now)
 		if persistErr != nil {
 			return true, withCircuitAccounting(persistErr, circuitErr)
 		}
 		return true, withCircuitAccounting(err, circuitErr)
 	}
 	return true, withCircuitAccounting(nil,
-		p.recordCircuitSuccess(ctx, "spacexcard_openapi", "default", now))
+		p.recordCircuitSuccess(ctx, dependency, scope, now))
+}
+
+func (run inventoryRun) platformKey() string {
+	if run.ProviderKey == "" {
+		return provider.CardPlatformSpaceX
+	}
+	return run.ProviderKey
 }
 
 func (p *Processor) claimInventoryRun(ctx context.Context, now time.Time) (inventoryRun, bool, error) {
@@ -142,8 +152,22 @@ func (p *Processor) claimInventoryRun(ctx context.Context, now time.Time) (inven
 		if count != 1 {
 			return nil
 		}
-		if err := tx.QueryRowContext(ctx, `SELECT id,mode,status,next_page,total_cards,discovered_cards FROM card_inventory_runs WHERE id=?`, id).
-			Scan(&run.ID, &run.Mode, &run.Status, &run.NextPage, &run.Total, &run.Discovered); err != nil {
+		var platformTables int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master
+		  WHERE type='table' AND name='membership_card_platforms'`).Scan(&platformTables); err != nil {
+			return err
+		}
+		hasPlatforms := platformTables == 1
+		if hasPlatforms {
+			err = tx.QueryRowContext(ctx, `SELECT id,provider_key,mode,status,next_page,total_cards,discovered_cards
+		    FROM card_inventory_runs WHERE id=?`, id).
+				Scan(&run.ID, &run.ProviderKey, &run.Mode, &run.Status, &run.NextPage, &run.Total, &run.Discovered)
+		} else {
+			err = tx.QueryRowContext(ctx, `SELECT id,mode,status,next_page,total_cards,discovered_cards
+		    FROM card_inventory_runs WHERE id=?`, id).
+				Scan(&run.ID, &run.Mode, &run.Status, &run.NextPage, &run.Total, &run.Discovered)
+		}
+		if err != nil {
 			return err
 		}
 		found = true
@@ -159,37 +183,62 @@ func (p *Processor) releaseInventoryRun(ctx context.Context, id string, now time
 }
 
 func (p *Processor) scheduleTargetedInventory(ctx context.Context, now time.Time) (bool, error) {
+	hasPlatforms, err := p.hasCardPlatformTable(ctx)
+	if err != nil {
+		return false, err
+	}
 	scheduled := false
-	err := p.withFencedImmediate(ctx, func(tx *sql.Tx) error {
+	err = p.withFencedImmediate(ctx, func(tx *sql.Tx) error {
 		var status string
 		if err := tx.QueryRowContext(ctx, `SELECT inventory_status FROM membership_fulfillment_settings WHERE id='default'`).Scan(&status); err != nil {
 			return err
 		}
-		if status != "completed" {
+		if !hasPlatforms && status != "completed" {
 			return nil
 		}
 		var count int
 		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM card_inventory_runs WHERE status IN ('discovering','reconciling')`).Scan(&count); err != nil || count > 0 {
 			return err
 		}
+		platformKey := provider.CardPlatformSpaceX
 		var upstreamID int64
-		err := tx.QueryRowContext(ctx, `SELECT upstream_card_id FROM managed_cards
-      WHERE reconciliation_state='PENDING' AND reconciliation_reason='WEBHOOK_RECHECK_PENDING'
-      ORDER BY updated_at,upstream_card_id LIMIT 1`).Scan(&upstreamID)
-		if errors.Is(err, sql.ErrNoRows) {
+		var queryErr error
+		if hasPlatforms {
+			queryErr = tx.QueryRowContext(ctx, `SELECT card.provider_key,card.upstream_card_id FROM managed_cards card
+		  JOIN membership_card_platforms platform ON platform.key=card.provider_key
+		  WHERE platform.enabled=1 AND platform.inventory_status='completed' AND (
+		    (card.reconciliation_state='PENDING' AND card.reconciliation_reason='WEBHOOK_RECHECK_PENDING') OR
+		    (card.provider_key='spacexcard' AND card.reconciliation_state='READY' AND
+		      card.capacity_state='CAPACITY_FULL' AND card.upstream_status='ACTIVE'))
+		  ORDER BY CASE WHEN card.reconciliation_state='PENDING' THEN 0 ELSE 1 END,
+		    platform.priority,card.updated_at,card.upstream_card_id LIMIT 1`).Scan(&platformKey, &upstreamID)
+		} else {
+			queryErr = tx.QueryRowContext(ctx, `SELECT upstream_card_id FROM managed_cards
+		  WHERE (reconciliation_state='PENDING' AND reconciliation_reason='WEBHOOK_RECHECK_PENDING')
+		     OR (reconciliation_state='READY' AND capacity_state='CAPACITY_FULL' AND upstream_status='ACTIVE')
+		  ORDER BY CASE WHEN reconciliation_state='PENDING' THEN 0 ELSE 1 END,updated_at,upstream_card_id LIMIT 1`).Scan(&upstreamID)
+		}
+		if errors.Is(queryErr, sql.ErrNoRows) {
 			return nil
 		}
-		if err != nil {
-			return err
+		if queryErr != nil {
+			return queryErr
 		}
 		id, err := store.NewID("mir_target_")
 		if err != nil {
 			return err
 		}
 		at := store.ISO(now)
-		if _, err = tx.ExecContext(ctx, `INSERT INTO card_inventory_runs
-      (id,mode,status,next_page,total_cards,discovered_cards,processed_cards,held_cards,started_at,updated_at)
-      VALUES (?,'targeted','reconciling',1,1,1,0,0,?,?)`, id, at, at); err != nil {
+		if hasPlatforms {
+			_, err = tx.ExecContext(ctx, `INSERT INTO card_inventory_runs
+	      (id,provider_key,mode,status,next_page,total_cards,discovered_cards,processed_cards,held_cards,started_at,updated_at)
+	      VALUES (?,?,'targeted','reconciling',1,1,1,0,0,?,?)`, id, platformKey, at, at)
+		} else {
+			_, err = tx.ExecContext(ctx, `INSERT INTO card_inventory_runs
+	      (id,mode,status,next_page,total_cards,discovered_cards,processed_cards,held_cards,started_at,updated_at)
+	      VALUES (?,'targeted','reconciling',1,1,1,0,0,?,?)`, id, at, at)
+		}
+		if err != nil {
 			return err
 		}
 		if _, err = tx.ExecContext(ctx, `INSERT INTO card_inventory_run_items
@@ -197,7 +246,11 @@ func (p *Processor) scheduleTargetedInventory(ctx context.Context, now time.Time
 			return err
 		}
 		_, err = tx.ExecContext(ctx, `UPDATE membership_fulfillment_settings SET inventory_status='running',
-      last_inventory_error=NULL,updated_at=?,updated_by='go-worker' WHERE id='default'`, at)
+	      last_inventory_error=NULL,updated_at=?,updated_by='go-worker' WHERE id='default'`, at)
+		if err == nil && hasPlatforms {
+			_, err = tx.ExecContext(ctx, `UPDATE membership_card_platforms SET inventory_status='running',
+		  last_inventory_error=NULL,updated_at=?,updated_by='go-worker' WHERE key=?`, at, platformKey)
+		}
 		scheduled = err == nil
 		return err
 	})
@@ -205,6 +258,28 @@ func (p *Processor) scheduleTargetedInventory(ctx context.Context, now time.Time
 }
 
 func (p *Processor) schedulePeriodicInventory(ctx context.Context, now time.Time) (bool, error) {
+	hasPlatforms, err := p.hasCardPlatformTable(ctx)
+	if err != nil {
+		return false, err
+	}
+	if hasPlatforms {
+		var key, completed string
+		err := p.store.DB().QueryRowContext(ctx, `SELECT platform.key,MAX(run.completed_at)
+		  FROM membership_card_platforms platform
+		  JOIN card_inventory_runs run ON run.provider_key=platform.key
+		  WHERE platform.enabled=1 AND platform.inventory_status='completed'
+		    AND run.mode IN ('full','refresh') AND run.status='completed'
+		  GROUP BY platform.key
+		  HAVING MAX(run.completed_at)<=?
+		  ORDER BY platform.priority,platform.key LIMIT 1`, store.ISO(now.Add(-inventoryRefresh))).Scan(&key, &completed)
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		return p.schedulePlatformInventory(ctx, key, "refresh", now)
+	}
 	var status string
 	var encrypted sql.NullString
 	if err := p.store.DB().QueryRowContext(ctx, `SELECT inventory_status,spacexcard_app_secret_encrypted
@@ -249,9 +324,43 @@ func (p *Processor) schedulePeriodicInventory(ctx context.Context, now time.Time
 	return scheduled, err
 }
 
-func (p *Processor) discoverInventoryPage(ctx context.Context, client *provider.SpaceXClient, run inventoryRun, now time.Time) error {
+func (p *Processor) schedulePlatformInventory(ctx context.Context, key, mode string, now time.Time) (bool, error) {
+	scheduled := false
+	err := p.withFencedImmediate(ctx, func(tx *sql.Tx) error {
+		var active int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM card_inventory_runs
+		  WHERE status IN ('discovering','reconciling')`).Scan(&active); err != nil || active > 0 {
+			return err
+		}
+		id, err := store.NewID("mir_")
+		if err != nil {
+			return err
+		}
+		at := store.ISO(now)
+		if _, err = tx.ExecContext(ctx, `INSERT INTO card_inventory_runs
+		  (id,provider_key,mode,status,next_page,total_cards,discovered_cards,processed_cards,held_cards,started_at,updated_at)
+		  VALUES (?,?,?,'discovering',1,NULL,0,0,0,?,?)`, id, key, mode, at, at); err != nil {
+			return err
+		}
+		if _, err = tx.ExecContext(ctx, `UPDATE membership_card_platforms SET inventory_status='running',
+		  last_inventory_error=NULL,updated_at=?,updated_by='go-worker' WHERE key=? AND enabled=1`, at, key); err != nil {
+			return err
+		}
+		_, err = tx.ExecContext(ctx, `UPDATE membership_fulfillment_settings SET inventory_status='running',
+		  last_inventory_error=NULL,updated_at=?,updated_by='go-worker' WHERE id='default'`, at)
+		scheduled = err == nil
+		return err
+	})
+	return scheduled, err
+}
+
+func (p *Processor) discoverInventoryPage(ctx context.Context, client provider.CardPlatform, run inventoryRun, now time.Time) error {
+	contractCode := "CARD_PLATFORM_CONTRACT_DRIFT"
+	if client.Key() == provider.CardPlatformSpaceX {
+		contractCode = "SPACEXCARD_CONTRACT_DRIFT"
+	}
 	if run.NextPage < 1 || run.NextPage > inventoryMaxPages {
-		return coded("SPACEXCARD_CONTRACT_DRIFT", "SpaceX Card inventory pagination exceeded its safe limit")
+		return coded(contractCode, "card platform inventory pagination exceeded its safe limit")
 	}
 	total, cards, err := client.ListCards(ctx, run.NextPage, inventoryPageSize, true)
 	if err != nil {
@@ -262,12 +371,26 @@ func (p *Processor) discoverInventoryPage(ctx context.Context, client *provider.
 	}
 	return p.withFencedImmediate(ctx, func(tx *sql.Tx) error {
 		if run.Total.Valid && run.Total.Int64 != int64(total) {
-			return coded("SPACEXCARD_CONTRACT_DRIFT", "SpaceX Card inventory total changed during pagination")
+			return coded(contractCode, "card platform inventory total changed during pagination")
 		}
 		at := store.ISO(now)
 		for _, card := range cards {
-			id := fmt.Sprintf("mc_%d", card.UpstreamCardID)
-			if _, err := tx.ExecContext(ctx, `INSERT INTO managed_cards
+			id := fmt.Sprintf("mc_%s_%d", run.platformKey(), card.UpstreamCardID)
+			var err error
+			if run.ProviderKey != "" {
+				_, err = tx.ExecContext(ctx, `INSERT INTO managed_cards
+			  (id,provider_key,upstream_card_id,vm_card_id,product_code,bin,last4,upstream_status,cached_available_amount,
+			   capacity_state,reconciliation_state,last_balance_sync_at,created_at,updated_at)
+			  VALUES (?,?,?,?,?,?,?,?,?,'PENDING','PENDING',?,?,?)
+			  ON CONFLICT(provider_key,upstream_card_id) DO UPDATE SET vm_card_id=excluded.vm_card_id,
+			    product_code=excluded.product_code,bin=excluded.bin,last4=excluded.last4,
+			    upstream_status=excluded.upstream_status,cached_available_amount=excluded.cached_available_amount,
+			    last_balance_sync_at=excluded.last_balance_sync_at,updated_at=excluded.updated_at`,
+					id, run.platformKey(), card.UpstreamCardID, card.VMCardID, card.ProductCode,
+					nullString(card.BIN), nullString(card.Last4), card.Status, card.AvailableAmount, at, at, at)
+			} else {
+				id = fmt.Sprintf("mc_%d", card.UpstreamCardID)
+				_, err = tx.ExecContext(ctx, `INSERT INTO managed_cards
         (id,upstream_card_id,vm_card_id,product_code,bin,last4,upstream_status,cached_available_amount,
          capacity_state,reconciliation_state,last_balance_sync_at,created_at,updated_at)
         VALUES (?,?,?,?,?,?,?,?,'PENDING','PENDING',?,?,?)
@@ -275,7 +398,9 @@ func (p *Processor) discoverInventoryPage(ctx context.Context, client *provider.
           bin=excluded.bin,last4=excluded.last4,upstream_status=excluded.upstream_status,
           cached_available_amount=excluded.cached_available_amount,last_balance_sync_at=excluded.last_balance_sync_at,
           updated_at=excluded.updated_at`, id, card.UpstreamCardID, card.VMCardID, card.ProductCode,
-				nullString(card.BIN), nullString(card.Last4), card.Status, card.AvailableAmount, at, at, at); err != nil {
+					nullString(card.BIN), nullString(card.Last4), card.Status, card.AvailableAmount, at, at, at)
+			}
+			if err != nil {
 				return err
 			}
 			if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO card_inventory_run_items
@@ -289,7 +414,7 @@ func (p *Processor) discoverInventoryPage(ctx context.Context, client *provider.
 		}
 		if discovered > total || (len(cards) > 0 && discovered == run.Discovered) ||
 			(len(cards) == 0 && discovered < total) || (len(cards) < inventoryPageSize && discovered < total) {
-			return coded("SPACEXCARD_CONTRACT_DRIFT", "SpaceX Card inventory pagination is inconsistent")
+			return coded(contractCode, "card platform inventory pagination is inconsistent")
 		}
 		done := discovered == total
 		status := "discovering"
@@ -313,7 +438,7 @@ func (p *Processor) nextInventoryItem(ctx context.Context, runID string, now tim
 	return item, err == nil, err
 }
 
-func (p *Processor) loadAllTransactions(ctx context.Context, client *provider.SpaceXClient, upstreamID int64) ([]provider.Transaction, error) {
+func (p *Processor) loadAllTransactions(ctx context.Context, client provider.CardPlatform, upstreamID int64) ([]provider.Transaction, error) {
 	var all []provider.Transaction
 	for page := 1; page <= 100; page++ {
 		items, err := client.ListTransactions(ctx, upstreamID, page, transactionPageSize)
@@ -410,17 +535,24 @@ func providerDomainTransactions(items []provider.Transaction) []domain.CardTrans
 	return result
 }
 
-func (p *Processor) reconcileInventoryCard(ctx context.Context, client *provider.SpaceXClient, run inventoryRun, item inventoryItem, now time.Time) error {
+func (p *Processor) reconcileInventoryCard(ctx context.Context, client provider.CardPlatform, run inventoryRun, item inventoryItem, now time.Time) error {
 	var cardID string
 	var lane sql.NullString
-	if err := p.store.DB().QueryRowContext(ctx, `SELECT id,lane FROM managed_cards WHERE upstream_card_id=?`, item.UpstreamCardID).Scan(&cardID, &lane); err != nil {
+	var upstreamStatus string
+	query := `SELECT id,lane,upstream_status FROM managed_cards WHERE upstream_card_id=?`
+	args := []any{item.UpstreamCardID}
+	if run.ProviderKey != "" {
+		query = `SELECT id,lane,upstream_status FROM managed_cards WHERE provider_key=? AND upstream_card_id=?`
+		args = []any{run.platformKey(), item.UpstreamCardID}
+	}
+	if err := p.store.DB().QueryRowContext(ctx, query, args...).Scan(&cardID, &lane, &upstreamStatus); err != nil {
 		return codedWrap("MANAGED_CARD_NOT_FOUND", "managed card missing", err)
 	}
 	transactions, err := p.loadAllTransactions(ctx, client, item.UpstreamCardID)
 	if err != nil {
 		return err
 	}
-	prices, err := client.GetOpenAIPayments(ctx, item.UpstreamCardID)
+	prices, err := client.GetOpenAIPayments(ctx, item.UpstreamCardID, transactions)
 	if err != nil {
 		return err
 	}
@@ -457,6 +589,10 @@ func (p *Processor) reconcileInventoryCard(ctx context.Context, client *provider
 		}
 	}
 	classification := domain.ClassifyHistoricalCardFulfillments(providerDomainTransactions(transactions), knownLane)
+	upstreamStatus, err = p.freezeCardAfterReconciliation(ctx, client, item.UpstreamCardID, upstreamStatus, classification)
+	if err != nil {
+		return err
+	}
 	collapsed := collapseProviderTransactions(transactions)
 	held := classification.State == domain.HistoricalStateReconciliationHold
 	return p.withFencedImmediate(ctx, func(tx *sql.Tx) error {
@@ -505,7 +641,7 @@ func (p *Processor) reconcileInventoryCard(ctx context.Context, client *provider
 			reconState = "HOLD"
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE managed_cards SET lane=?,consumed_slots=?,capacity_state=?,reconciliation_state=?,
-      reconciliation_reason=?,last_transaction_sync_at=?,updated_at=? WHERE id=?`, finalLane, classification.Consumed, capacityState, reconState, nullString(classification.Reason), at, at, cardID); err != nil {
+      reconciliation_reason=?,upstream_status=?,last_transaction_sync_at=?,updated_at=? WHERE id=?`, finalLane, classification.Consumed, capacityState, reconState, nullString(classification.Reason), upstreamStatus, at, at, cardID); err != nil {
 			return err
 		}
 		itemStatus := "succeeded"
@@ -518,6 +654,23 @@ func (p *Processor) reconcileInventoryCard(ctx context.Context, client *provider
 		}
 		return p.updateInventoryProgressWith(ctx, tx, run.ID, now)
 	})
+}
+
+func (p *Processor) freezeCardAfterReconciliation(ctx context.Context, client provider.CardPlatform, upstreamCardID int64, upstreamStatus string, classification domain.HistoricalFulfillmentResult) (string, error) {
+	status := strings.ToUpper(strings.TrimSpace(upstreamStatus))
+	if classification.State != domain.HistoricalStateCapacityFull || status != "ACTIVE" {
+		return status, nil
+	}
+	if !client.Capabilities().Freeze {
+		return status, nil
+	}
+	if err := p.assertWorkAllowed(ctx); err != nil {
+		return status, err
+	}
+	if err := client.FreezeCard(ctx, upstreamCardID); err != nil {
+		return status, err
+	}
+	return "FROZEN", nil
 }
 
 func (p *Processor) updateInventoryProgress(ctx context.Context, runID string, now time.Time) error {
@@ -538,20 +691,46 @@ func (p *Processor) updateInventoryProgressWith(ctx context.Context, tx *sql.Tx,
 		return nil
 	}
 	var mode string
-	if err := tx.QueryRowContext(ctx, `SELECT mode FROM card_inventory_runs WHERE id=?`, runID).Scan(&mode); err != nil {
+	platformKey := provider.CardPlatformSpaceX
+	var platformTables int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master
+	  WHERE type='table' AND name='membership_card_platforms'`).Scan(&platformTables); err != nil {
+		return err
+	}
+	hasPlatforms := platformTables == 1
+	var err error
+	if hasPlatforms {
+		err = tx.QueryRowContext(ctx, `SELECT provider_key,mode FROM card_inventory_runs WHERE id=?`, runID).Scan(&platformKey, &mode)
+	} else {
+		err = tx.QueryRowContext(ctx, `SELECT mode FROM card_inventory_runs WHERE id=?`, runID).Scan(&mode)
+	}
+	if err != nil {
 		return err
 	}
 	if mode == "full" || mode == "refresh" {
-		if _, err := tx.ExecContext(ctx, `UPDATE managed_cards SET upstream_status='MISSING',capacity_state='HOLD',reconciliation_state='HOLD',
+		missingQuery := `UPDATE managed_cards SET upstream_status='MISSING',capacity_state='HOLD',reconciliation_state='HOLD',
       reconciliation_reason='UPSTREAM_CARD_MISSING',updated_at=? WHERE NOT EXISTS(SELECT 1 FROM card_inventory_run_items item
-      WHERE item.run_id=? AND item.upstream_card_id=managed_cards.upstream_card_id)`, at, runID); err != nil {
+      WHERE item.run_id=? AND item.upstream_card_id=managed_cards.upstream_card_id)`
+		missingArgs := []any{at, runID}
+		if hasPlatforms {
+			missingQuery += ` AND managed_cards.provider_key=?`
+			missingArgs = append(missingArgs, platformKey)
+		}
+		if _, err := tx.ExecContext(ctx, missingQuery, missingArgs...); err != nil {
 			return err
 		}
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE card_inventory_runs SET status='completed',completed_at=?,last_error_code=NULL,locked_at=NULL,locked_by=NULL,updated_at=? WHERE id=?`, at, at, runID); err != nil {
 		return err
 	}
-	_, err := tx.ExecContext(ctx, `UPDATE membership_fulfillment_settings SET inventory_status='completed',inventory_initialized_at=COALESCE(inventory_initialized_at,?),
+	if hasPlatforms {
+		if _, err := tx.ExecContext(ctx, `UPDATE membership_card_platforms SET inventory_status='completed',
+		  inventory_initialized_at=COALESCE(inventory_initialized_at,?),last_inventory_error=NULL,
+		  updated_at=?,updated_by='go-worker' WHERE key=?`, at, at, platformKey); err != nil {
+			return err
+		}
+	}
+	_, err = tx.ExecContext(ctx, `UPDATE membership_fulfillment_settings SET inventory_status='completed',inventory_initialized_at=COALESCE(inventory_initialized_at,?),
     last_inventory_error=NULL,updated_at=?,updated_by='go-worker' WHERE id='default'`, at, at)
 	return err
 }
@@ -559,7 +738,7 @@ func (p *Processor) updateInventoryProgressWith(ctx context.Context, tx *sql.Tx,
 func (p *Processor) recordInventoryItemFailure(ctx context.Context, run inventoryRun, item inventoryItem, cause error, now time.Time) error {
 	attempt := item.AttemptCount + 1
 	code := errorCode(cause)
-	cardSpecific := code == "SPACEXCARD_OPERATION_REJECTED" && attempt >= 3
+	cardSpecific := (code == "SPACEXCARD_OPERATION_REJECTED" || code == "EFUNCARD_OPERATION_REJECTED") && attempt >= 3
 	delays := []time.Duration{30 * time.Second, 2 * time.Minute, 5 * time.Minute, 15 * time.Minute}
 	delay := delays[min(attempt-1, len(delays)-1)]
 	return p.withFencedImmediate(ctx, func(tx *sql.Tx) error {
@@ -574,7 +753,13 @@ func (p *Processor) recordInventoryItemFailure(ctx context.Context, run inventor
 			return err
 		}
 		if cardSpecific {
-			if _, err := tx.ExecContext(ctx, `UPDATE managed_cards SET capacity_state='HOLD',reconciliation_state='HOLD',reconciliation_reason='CARD_SYNC_REJECTED',updated_at=? WHERE upstream_card_id=?`, at, item.UpstreamCardID); err != nil {
+			query := `UPDATE managed_cards SET capacity_state='HOLD',reconciliation_state='HOLD',reconciliation_reason='CARD_SYNC_REJECTED',updated_at=? WHERE upstream_card_id=?`
+			args := []any{at, item.UpstreamCardID}
+			if run.ProviderKey != "" {
+				query += ` AND provider_key=?`
+				args = append(args, run.platformKey())
+			}
+			if _, err := tx.ExecContext(ctx, query, args...); err != nil {
 				return err
 			}
 		}
@@ -583,6 +768,12 @@ func (p *Processor) recordInventoryItemFailure(ctx context.Context, run inventor
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE membership_fulfillment_settings SET last_inventory_error=?,updated_at=?,updated_by='go-worker' WHERE id='default'`, code, at); err != nil {
 			return err
+		}
+		if run.ProviderKey != "" {
+			if _, err := tx.ExecContext(ctx, `UPDATE membership_card_platforms SET last_inventory_error=?,
+			  updated_at=?,updated_by='go-worker' WHERE key=?`, code, at, run.platformKey()); err != nil {
+				return err
+			}
 		}
 		return p.updateInventoryProgressWith(ctx, tx, run.ID, now)
 	})
@@ -594,6 +785,13 @@ func (p *Processor) inventoryRunFailure(ctx context.Context, runID string, cause
 	return p.withFencedImmediate(ctx, func(tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, `UPDATE card_inventory_runs SET last_error_code=?,updated_at=? WHERE id=?`, code, at, runID); err != nil {
 			return err
+		}
+		var platformKey sql.NullString
+		if err := tx.QueryRowContext(ctx, `SELECT provider_key FROM card_inventory_runs WHERE id=?`, runID).Scan(&platformKey); err == nil && platformKey.Valid {
+			if _, err := tx.ExecContext(ctx, `UPDATE membership_card_platforms SET last_inventory_error=?,
+			  updated_at=?,updated_by='go-worker' WHERE key=?`, code, at, platformKey.String); err != nil {
+				return err
+			}
 		}
 		_, err := tx.ExecContext(ctx, `UPDATE membership_fulfillment_settings SET last_inventory_error=?,updated_at=?,updated_by='go-worker' WHERE id='default'`, code, at)
 		return err

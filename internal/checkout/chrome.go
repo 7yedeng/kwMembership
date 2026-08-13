@@ -22,36 +22,70 @@ import (
 
 const pageTimeout = 30 * time.Second
 
+var authenticatedIdentityEvalOptions = []chromedp.EvaluateOption{
+	func(params *cdpruntime.EvaluateParams) *cdpruntime.EvaluateParams {
+		return params.WithAwaitPromise(true)
+	},
+}
+
 type ChromeExecutor struct {
-	path    string
-	timeout time.Duration
+	path             string
+	proxyServer      string
+	visible          bool
+	timeout          time.Duration
+	challengeTimeout time.Duration
 }
 
-func NewChromeExecutor(path string, timeout time.Duration) *ChromeExecutor {
-	return &ChromeExecutor{path: path, timeout: timeout}
+func NewChromeExecutor(path, proxyServer string, visible bool, timeout, challengeTimeout time.Duration) *ChromeExecutor {
+	return &ChromeExecutor{path: path, proxyServer: proxyServer, visible: visible, timeout: timeout, challengeTimeout: challengeTimeout}
 }
 
-func chromeOptions(path string) []chromedp.ExecAllocatorOption {
-	return append(chromedp.DefaultExecAllocatorOptions[:],
+func chromeOptions(path, proxyServer string, visible bool) []chromedp.ExecAllocatorOption {
+	if visible {
+		// A fresh ExecAllocator still creates and removes a private temporary
+		// profile for every execution. Keep the Xvfb-backed launch surface small:
+		// ChatGPT currently rejects Chromedp's broader default flag set before
+		// /api/auth/session, while this reviewed profile preserves isolation.
+		options := []chromedp.ExecAllocatorOption{
+			chromedp.ExecPath(path),
+			chromedp.NoFirstRun,
+			chromedp.NoDefaultBrowserCheck,
+			chromedp.Flag("headless", false),
+			chromedp.Flag("disable-extensions", true),
+			chromedp.Flag("disable-sync", true),
+			chromedp.WindowSize(1280, 900),
+		}
+		if proxyServer != "" {
+			options = append(options, chromedp.ProxyServer(proxyServer))
+		}
+		return options
+	}
+	options := append(chromedp.DefaultExecAllocatorOptions[:],
 		chromedp.ExecPath(path),
+		chromedp.Flag("headless", true),
+		chromedp.Flag("hide-scrollbars", true),
 		chromedp.Flag("incognito", true),
 		chromedp.Flag("disable-extensions", true),
 		chromedp.Flag("disable-sync", true),
 		chromedp.WindowSize(1280, 900),
 	)
+	if proxyServer != "" {
+		options = append(options, chromedp.ProxyServer(proxyServer))
+	}
+	return options
 }
 
-// VerifyChrome launches an isolated headless process without visiting the
+// VerifyChrome launches an isolated process without visiting the
 // network. Deployment checks use it to catch missing libraries or sandbox
 // problems before the worker can claim an order.
-func VerifyChrome(ctx context.Context, path string) error {
-	allocator, cancelAllocator := chromedp.NewExecAllocator(ctx, chromeOptions(path)...)
+func VerifyChrome(ctx context.Context, path, proxyServer string, visible bool) error {
+	allocator, cancelAllocator := chromedp.NewExecAllocator(ctx, chromeOptions(path, proxyServer, visible)...)
 	defer cancelAllocator()
 	browser, cancelBrowser := chromedp.NewContext(allocator)
 	defer cancelBrowser()
 	var userAgent string
 	if err := chromedp.Run(browser, chromedp.Navigate("about:blank"), chromedp.Evaluate(`navigator.userAgent`, &userAgent)); err != nil {
-		return failure("HEADLESS_BROWSER_UNAVAILABLE", "launch headless Chrome", err)
+		return failure("HEADLESS_BROWSER_UNAVAILABLE", "launch Chrome", err)
 	}
 	if !strings.Contains(userAgent, "Chrome") {
 		return failure("HEADLESS_BROWSER_UNAVAILABLE", "headless browser identity is not Chrome")
@@ -88,17 +122,35 @@ type fillResult struct {
 	Filled   []string `json:"filled"`
 }
 
+type authenticatedIdentity struct {
+	Email     string `json:"email"`
+	ErrorKind string `json:"errorKind"`
+}
+
 type activationResult struct {
 	Activated bool `json:"activated"`
+}
+
+type plusCheckoutEntry struct {
+	ResponseTag       string `json:"responseTag"`
+	CheckoutURL       string `json:"checkoutURL"`
+	ProcessorEntity   string `json:"processorEntity"`
+	CheckoutSessionID string `json:"checkoutSessionID"`
+	ErrorKind         string `json:"errorKind"`
+	HTTPStatus        int    `json:"httpStatus"`
 }
 
 func (c *ChromeExecutor) Execute(parent context.Context, request Request) (Result, error) {
 	if err := validateRequest(request); err != nil {
 		return Result{}, err
 	}
-	ctx, cancel := context.WithTimeout(parent, c.timeout)
+	timeout := c.timeout
+	if request.OnHandoff != nil && c.challengeTimeout+pageTimeout > timeout {
+		timeout = c.challengeTimeout + pageTimeout
+	}
+	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
-	allocator, cancelAllocator := chromedp.NewExecAllocator(ctx, chromeOptions(c.path)...)
+	allocator, cancelAllocator := chromedp.NewExecAllocator(ctx, chromeOptions(c.path, c.proxyServer, c.visible)...)
 	defer cancelAllocator()
 	browser, cancelBrowser := chromedp.NewContext(allocator)
 	defer cancelBrowser()
@@ -110,6 +162,18 @@ func (c *ChromeExecutor) Execute(parent context.Context, request Request) (Resul
 		chromedp.ActionFunc(func(target context.Context) error { return setCookies(target, request.Cookies) }),
 	); err != nil {
 		return Result{}, failure("HEADLESS_BROWSER_UNAVAILABLE", "start headless browser", err)
+	}
+	if request.Mode == ModeInteractivePreflight {
+		if !c.visible {
+			return Result{}, failure("INTERACTIVE_LOGIN_DISABLED", "interactive login requires visible browser mode")
+		}
+		return c.executeInteractivePreflight(browser, request)
+	}
+	if request.Mode == ModeSessionPreflight {
+		return c.executeSessionPreflight(browser, request)
+	}
+	if request.Mode == ModeSessionCheckout {
+		return c.executeSessionCheckout(browser, request)
 	}
 	if request.Mode == ModeUpgrade {
 		return c.executeUpgrade(browser, request)
@@ -128,7 +192,8 @@ func (c *ChromeExecutor) Execute(parent context.Context, request Request) (Resul
 }
 
 func validateRequest(request Request) error {
-	if request.Mode != ModePreflight && request.Mode != ModeCheckout && request.Mode != ModeUpgrade {
+	if request.Mode != ModePreflight && request.Mode != ModeInteractivePreflight && request.Mode != ModeSessionPreflight &&
+		request.Mode != ModeSessionCheckout && request.Mode != ModeCheckout && request.Mode != ModeUpgrade {
 		return failure("CHECKOUT_REQUEST_INVALID", "checkout mode is invalid")
 	}
 	if request.Stage != "plus" && request.Stage != "upgrade" {
@@ -141,17 +206,44 @@ func validateRequest(request Request) error {
 	if contract.ID == "" || contract.Version < 1 || contract.Currency != "PHP" || contract.MinAmount <= 0 || contract.MaxAmount < contract.MinAmount {
 		return failure("CHECKOUT_REQUEST_INVALID", "checkout price contract is invalid")
 	}
+	if request.Mode == ModeInteractivePreflight {
+		if request.Stage != "plus" || request.CheckoutURL != "" || request.PlanURL != "" || len(request.Cookies) != 0 ||
+			request.Material != nil || request.Guard != nil || request.OnHandoff == nil || normalizeEmail(request.ExpectedEmail) == "" {
+			return failure("CHECKOUT_REQUEST_INVALID", "interactive login preflight request is invalid")
+		}
+		return nil
+	}
+	if request.Mode == ModeSessionPreflight {
+		if request.Stage != "plus" || request.CheckoutURL != "" || request.PlanURL != "" || len(request.Cookies) == 0 ||
+			request.Material != nil || request.Guard != nil || normalizeEmail(request.ExpectedEmail) == "" {
+			return failure("CHECKOUT_REQUEST_INVALID", "Session preflight request is invalid")
+		}
+		return nil
+	}
+	sessionCheckout := request.Mode == ModeSessionCheckout
+	if sessionCheckout {
+		validEntry := request.CheckoutURL == "" && normalizeEmail(request.ExpectedEmail) != "" && len(request.Cookies) > 0
+		validStage := request.Stage == "plus" && request.PlanURL == "" ||
+			request.Stage == "upgrade" && request.TargetTier != "plus" && request.PlanURL == PlanManagementURL
+		if !validEntry || !validStage {
+			return failure("CHECKOUT_REQUEST_INVALID", "Session checkout request is invalid")
+		}
+	} else if request.ExpectedEmail != "" {
+		return failure("CHECKOUT_REQUEST_INVALID", "prepared checkout must not carry an interactive identity")
+	}
 	if request.Mode == ModeUpgrade {
 		if request.Stage != "upgrade" || request.TargetTier == "plus" || request.PlanURL != PlanManagementURL {
 			return failure("CHECKOUT_REQUEST_INVALID", "upgrade checkout request is invalid")
 		}
-	} else if _, err := allowedCheckoutURL(request.CheckoutURL); err != nil {
-		return err
+	} else if !sessionCheckout {
+		if _, err := allowedCheckoutURL(request.CheckoutURL); err != nil {
+			return err
+		}
 	}
-	if request.Mode != ModePreflight && (request.Material == nil || request.Guard == nil) {
+	if request.Mode != ModePreflight && request.Mode != ModeSessionPreflight && (request.Material == nil || request.Guard == nil) {
 		return failure("CHECKOUT_REQUEST_INVALID", "checkout material or action guard is missing")
 	}
-	if request.Mode != ModePreflight {
+	if request.Mode != ModePreflight && request.Mode != ModeSessionPreflight {
 		material := request.Material
 		if len(material.Card.Number) < 12 || len(material.Card.Number) > 19 || !decimal(material.Card.Number) || !luhnValid(material.Card.Number) ||
 			(len(material.Card.CVV) != 3 && len(material.Card.CVV) != 4) || !decimal(material.Card.CVV) ||
@@ -165,6 +257,190 @@ func validateRequest(request Request) error {
 		return failure("COOKIE_PAYLOAD_INVALID", "checkout session cookies are missing")
 	}
 	return nil
+}
+
+func (c *ChromeExecutor) executeSessionPreflight(ctx context.Context, request Request) (Result, error) {
+	page, err := c.openPlusCheckout(ctx, request)
+	if err != nil {
+		return Result{}, err
+	}
+	return Result{Page: page.PageFacts, Challenge: page.StateID == "PAYMENT_ACTION_REQUIRED"}, nil
+}
+
+func (c *ChromeExecutor) executeSessionCheckout(ctx context.Context, request Request) (Result, error) {
+	if request.Stage == "upgrade" {
+		if err := navigate(ctx, InteractiveLoginURL); err != nil {
+			return Result{}, err
+		}
+		if err := c.verifySessionIdentity(ctx, request); err != nil {
+			return Result{}, err
+		}
+		return c.executeUpgrade(ctx, request)
+	}
+	page, err := c.openPlusCheckout(ctx, request)
+	if err != nil {
+		return Result{}, err
+	}
+	return c.executeCheckout(ctx, request, page, 0)
+}
+
+func (c *ChromeExecutor) openPlusCheckout(ctx context.Context, request Request) (inspectedPage, error) {
+	if err := navigate(ctx, InteractiveLoginURL); err != nil {
+		return inspectedPage{}, err
+	}
+	if err := c.verifySessionIdentity(ctx, request); err != nil {
+		return inspectedPage{}, err
+	}
+	var entry plusCheckoutEntry
+	if err := chromedp.Run(ctx, chromedp.Evaluate(preparePlusCheckoutJS, &entry, authenticatedIdentityEvalOptions...)); err != nil {
+		return inspectedPage{}, failure("CHECKOUT_ENTRY_UNAVAILABLE", "create Plus checkout entry", err)
+	}
+	switch entry.ErrorKind {
+	case "":
+	case "already_subscribed":
+		return inspectedPage{}, failure("CHATGPT_ACCOUNT_ALREADY_SUBSCRIBED", "ChatGPT account already has an active paid subscription")
+	case "session_unavailable", "access_token_unavailable":
+		return inspectedPage{}, failure("CHATGPT_SESSION_REFRESH_FAILED", "ChatGPT Session could not be refreshed")
+	case "checkout_unauthorized":
+		return inspectedPage{}, failure("CHECKOUT_API_AUTH_FAILED", "ChatGPT checkout API rejected the authenticated Session")
+	case "context_invalid":
+		return inspectedPage{}, failure("CHECKOUT_CONTEXT_INVALID", "ChatGPT checkout API context is invalid")
+	case "checkout_rejected", "checkout_unavailable":
+		return inspectedPage{}, failure("CHECKOUT_ENTRY_UNAVAILABLE", "ChatGPT checkout API did not create a checkout entry")
+	default:
+		return inspectedPage{}, failure("CHECKOUT_API_CONTRACT_DRIFT", "ChatGPT checkout API response contract changed")
+	}
+	checkoutURL, err := resolvePlusCheckoutEntry(entry)
+	if err != nil {
+		return inspectedPage{}, err
+	}
+	if err := navigate(ctx, checkoutURL); err != nil {
+		return inspectedPage{}, err
+	}
+	return c.waitPage(ctx, request, "checkout", "")
+}
+
+func resolvePlusCheckoutEntry(entry plusCheckoutEntry) (string, error) {
+	var value string
+	switch entry.ResponseTag {
+	case "hosted_checkout_session":
+		if entry.CheckoutURL == "" || entry.ProcessorEntity != "" || entry.CheckoutSessionID != "" {
+			return "", failure("CHECKOUT_API_CONTRACT_DRIFT", "hosted checkout response is invalid")
+		}
+		value = entry.CheckoutURL
+	case "custom_checkout_session":
+		if entry.CheckoutURL != "" {
+			return "", failure("CHECKOUT_API_CONTRACT_DRIFT", "custom checkout response unexpectedly included a URL")
+		}
+		if entry.ProcessorEntity != "openai_llc" {
+			return "", failure("CHECKOUT_API_CONTRACT_DRIFT", "custom checkout processor entity is unsupported")
+		}
+		if !customCheckoutSessionPrefix(entry.CheckoutSessionID) {
+			return "", failure("CHECKOUT_API_CONTRACT_DRIFT", "custom checkout session prefix is unsupported: "+routeIDPrefixClass(entry.CheckoutSessionID))
+		}
+		if !safeRouteID(entry.CheckoutSessionID) {
+			return "", failure("CHECKOUT_API_CONTRACT_DRIFT", "custom checkout session ID is unsafe")
+		}
+		value = "https://chatgpt.com/checkout/openai_llc/" + entry.CheckoutSessionID
+	default:
+		return "", failure("CHECKOUT_API_CONTRACT_DRIFT", "checkout response tag is unsupported")
+	}
+	parsed, err := allowedCheckoutURL(value)
+	if err != nil {
+		return "", failure("CHECKOUT_API_CONTRACT_DRIFT", "checkout response URL is outside the allowlist", err)
+	}
+	return parsed.String(), nil
+}
+
+func customCheckoutSessionPrefix(value string) bool {
+	return strings.HasPrefix(value, "oaics_") || strings.HasPrefix(value, "cs_")
+}
+
+func routeIDPrefixClass(value string) string {
+	index := strings.IndexByte(value, '_')
+	if index < 1 || index > 12 {
+		return "unclassified"
+	}
+	for _, char := range value[:index] {
+		if (char < 'a' || char > 'z') && (char < 'A' || char > 'Z') && (char < '0' || char > '9') {
+			return "unclassified"
+		}
+	}
+	return value[:index+1]
+}
+
+func (c *ChromeExecutor) verifySessionIdentity(ctx context.Context, request Request) error {
+	expected := normalizeEmail(request.ExpectedEmail)
+	deadline := time.Now().Add(pageTimeout)
+	for time.Now().Before(deadline) {
+		var identity authenticatedIdentity
+		if err := chromedp.Run(ctx, chromedp.Evaluate(authenticatedEmailJS, &identity, authenticatedIdentityEvalOptions...)); err == nil {
+			if identity.ErrorKind != "" {
+				return failure("CHATGPT_SESSION_REFRESH_FAILED", "ChatGPT Session could not be refreshed")
+			}
+			if actual := normalizeEmail(identity.Email); actual != "" {
+				if actual != expected {
+					return failure("CHATGPT_SESSION_IDENTITY_MISMATCH", "ChatGPT Session identity does not match the order")
+				}
+				return nil
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return failure("CHATGPT_SESSION_UNAUTHORIZED", "ChatGPT Session is not authenticated", ctx.Err())
+		case <-time.After(pagePollInterval):
+		}
+	}
+	return failure("CHATGPT_SESSION_UNAUTHORIZED", "ChatGPT Session is not authenticated")
+}
+
+func (c *ChromeExecutor) executeInteractivePreflight(ctx context.Context, request Request) (Result, error) {
+	if err := navigate(ctx, InteractiveLoginURL); err != nil {
+		return Result{}, err
+	}
+	if err := request.OnHandoff(ctx, Handoff{Type: "interactive-login", Page: PageFacts{
+		StateID: "INTERACTIVE_LOGIN_REQUIRED", Origin: "https://chatgpt.com", RouteTemplate: "/",
+	}}); err != nil {
+		return Result{}, failure("INTERACTIVE_LOGIN_HANDOFF_FAILED", "record interactive login handoff", err)
+	}
+	expectedEmail := normalizeEmail(request.ExpectedEmail)
+	identityVerified := false
+	deadline := time.Now().Add(c.challengeTimeout)
+	for time.Now().Before(deadline) {
+		var location string
+		if err := chromedp.Run(ctx, chromedp.Location(&location)); err == nil {
+			parsed, parseErr := url.Parse(location)
+			if parseErr == nil {
+				topOrigin := parsed.Scheme + "://" + parsed.Host
+				if topOrigin == "https://chatgpt.com" {
+					var identity authenticatedIdentity
+					if err := chromedp.Run(ctx, chromedp.Evaluate(authenticatedEmailJS, &identity, authenticatedIdentityEvalOptions...)); err == nil {
+						if actual := normalizeEmail(identity.Email); actual != "" {
+							if actual != expectedEmail {
+								return Result{}, failure("INTERACTIVE_LOGIN_IDENTITY_MISMATCH", "interactive login identity does not match the order")
+							}
+							identityVerified = true
+						}
+					}
+				}
+				if topOrigin == "https://chatgpt.com" || topOrigin == "https://pay.openai.com" {
+					page, inspectErr := c.inspect(ctx, request, "checkout")
+					if inspectErr == nil && (page.StateID == "PAYMENT_PROGRESSION_READY" || page.StateID == "PAYMENT_FINAL_READY") {
+						if !identityVerified {
+							return Result{}, failure("INTERACTIVE_LOGIN_IDENTITY_UNVERIFIED", "interactive login identity could not be verified")
+						}
+						return Result{Page: page.PageFacts}, nil
+					}
+				}
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return Result{}, failure("INTERACTIVE_LOGIN_TIMEOUT", "interactive login timed out", ctx.Err())
+		case <-time.After(pagePollInterval):
+		}
+	}
+	return Result{}, failure("INTERACTIVE_LOGIN_TIMEOUT", "interactive login did not reach a supported checkout page")
 }
 
 func decimal(value string) bool {
@@ -213,6 +489,11 @@ func routeTemplate(parsed *url.URL) string {
 	case "https://chatgpt.com":
 		if path == "/checkout" || path == "/checkout/" {
 			return "/checkout"
+		}
+		trimmed := strings.TrimSuffix(path, "/")
+		checkoutID := strings.TrimPrefix(trimmed, "/checkout/openai_llc/")
+		if checkoutID != trimmed && customCheckoutSessionPrefix(checkoutID) && safeRouteID(checkoutID) {
+			return "/checkout/{id}"
 		}
 		if matchPath(path, "/checkout/") {
 			return "/checkout/{id}"
@@ -388,6 +669,9 @@ func (c *ChromeExecutor) beforeAndActivate(ctx context.Context, request Request,
 	if err != nil {
 		return Permit{}, err
 	}
+	if err := request.Guard.ActivateAction(ctx, action, permit); err != nil {
+		return Permit{}, uncertain("PERMIT_ACTIVATION_UNCERTAIN", "persist checkout control activation", action, permit, err)
+	}
 	frameID, ok := page.controlFrames[controlKey]
 	if !ok || action.ControlID == "" {
 		return Permit{}, uncertain("PERMIT_ACTIVATION_UNCERTAIN", "authorized checkout control is missing", action, permit, nil)
@@ -441,13 +725,24 @@ func (c *ChromeExecutor) fillMaterial(ctx context.Context, page inspectedPage, m
 func (c *ChromeExecutor) waitPage(ctx context.Context, request Request, purpose, previousHash string) (inspectedPage, error) {
 	deadline := time.Now().Add(pageTimeout)
 	var last inspectedPage
+	challengeNotified := false
 	for time.Now().Before(deadline) {
 		page, err := c.inspect(ctx, request, purpose)
 		if err == nil {
 			last = page
-			ready := page.StateID != "UNKNOWN_PAYMENT_STATE"
-			if ready && (previousHash == "" || page.StructuralHash != previousHash || page.StateID == "PAYMENT_ACTION_REQUIRED") {
-				return page, nil
+			if page.StateID == "PAYMENT_ACTION_REQUIRED" && request.OnHandoff != nil {
+				if !challengeNotified {
+					if err := request.OnHandoff(ctx, Handoff{Type: page.Controls["challenge"], Page: page.PageFacts}); err != nil {
+						return inspectedPage{}, failure("SECURITY_CHALLENGE_HANDOFF_FAILED", "record security challenge handoff", err)
+					}
+					challengeNotified = true
+					deadline = time.Now().Add(c.challengeTimeout)
+				}
+			} else {
+				ready := page.StateID != "UNKNOWN_PAYMENT_STATE"
+				if ready && (previousHash == "" || page.StructuralHash != previousHash || page.StateID == "PAYMENT_ACTION_REQUIRED") {
+					return page, nil
+				}
 			}
 		}
 		select {
@@ -455,6 +750,9 @@ func (c *ChromeExecutor) waitPage(ctx context.Context, request Request, purpose,
 			return inspectedPage{}, failure("CHECKOUT_PAGE_TIMEOUT", "checkout page timed out", ctx.Err())
 		case <-time.After(pagePollInterval):
 		}
+	}
+	if challengeNotified {
+		return last, failure("SECURITY_CHALLENGE_TIMEOUT", "security challenge was not completed before timeout")
 	}
 	if last.StateID != "" {
 		return last, failure("CHECKOUT_UI_UNSUPPORTED", "checkout page structure is unsupported")
@@ -583,6 +881,9 @@ func mergeFacts(frames []frameFact, topOrigin, topRoute string, request Request,
 }
 
 func classify(page inspectedPage, request Request, purpose string) string {
+	if page.Origin == "https://chatgpt.com" && page.Controls["challenge"] == "challenge-cloudflare" {
+		return "PAYMENT_ACTION_REQUIRED"
+	}
 	expectedPlan := "plus"
 	if request.Stage == "upgrade" {
 		expectedPlan = map[string]string{"x5": "prolite", "x20": "pro"}[request.TargetTier]
@@ -693,4 +994,10 @@ func uniqueControl(facts []frameFact, key string) (string, cdp.FrameID, bool) {
 
 var _ Executor = (*ChromeExecutor)(nil)
 
-func (c *ChromeExecutor) String() string { return fmt.Sprintf("headless-chrome(%s)", c.path) }
+func (c *ChromeExecutor) String() string {
+	mode := "headless"
+	if c.visible {
+		mode = "visible"
+	}
+	return fmt.Sprintf("%s-chrome(%s)", mode, c.path)
+}

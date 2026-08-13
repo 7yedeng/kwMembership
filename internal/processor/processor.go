@@ -24,7 +24,6 @@ type Processor struct {
 	membership *provider.MembershipClient
 	renewal    *provider.RenewalClient
 	address    *provider.AddressClient
-	gpt        *provider.GPTClient
 	executor   checkout.Executor
 	now        func() time.Time
 	// requireLeaseFence is set by New. Package tests may deliberately construct
@@ -43,6 +42,11 @@ type Result struct {
 }
 
 func New(cfg config.Config, repository *store.Store, lease store.Lease, decrypter *secure.Decrypter) *Processor {
+	return NewWithExecutor(cfg, repository, lease, decrypter,
+		checkout.NewChromeExecutor(cfg.ChromePath, cfg.ChromeProxyServer, cfg.VisibleBrowser, cfg.BrowserTimeout, cfg.HumanChallengeTimeout))
+}
+
+func NewWithExecutor(cfg config.Config, repository *store.Store, lease store.Lease, decrypter *secure.Decrypter, executor checkout.Executor) *Processor {
 	client := &http.Client{
 		Timeout: cfg.HTTPTimeout,
 		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
@@ -55,8 +59,7 @@ func New(cfg config.Config, repository *store.Store, lease store.Lease, decrypte
 		membership:        provider.NewMembershipClient(client),
 		renewal:           provider.NewRenewalClient(client),
 		address:           provider.NewAddressClient(client, cfg.APIURL),
-		gpt:               provider.NewGPTClient(client),
-		executor:          checkout.NewChromeExecutor(cfg.ChromePath, cfg.BrowserTimeout),
+		executor:          executor,
 		now:               time.Now,
 		requireLeaseFence: true,
 	}

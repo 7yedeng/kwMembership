@@ -1,5 +1,106 @@
 package checkout
 
+const authenticatedEmailJS = `(async () => {
+  if (location.origin !== 'https://chatgpt.com') return {email:'',errorKind:''};
+  try {
+    const response = await fetch('/api/auth/session', {
+      method: 'GET', credentials: 'include', cache: 'no-store', redirect: 'error'
+    });
+    if (!response.ok) return {email:'',errorKind:''};
+    const session = await response.json();
+    const email = typeof session?.user?.email === 'string'
+      ? session.user.email
+      : (typeof session?.email === 'string' ? session.email : '');
+    const rawError = typeof session?.error === 'string' ? session.error : '';
+    const errorKind = /^[A-Za-z0-9_.:-]{1,80}$/.test(rawError) ? rawError : (rawError ? 'present' : '');
+    return {email,errorKind};
+  } catch {
+    return {email:'',errorKind:''};
+  }
+})()`
+
+const preparePlusCheckoutJS = `(async () => {
+  const result = (overrides = {}) => ({
+    responseTag: '', checkoutURL: '', processorEntity: '', checkoutSessionID: '',
+    errorKind: '', httpStatus: 0, ...overrides
+  });
+  if (location.origin !== 'https://chatgpt.com') return result({errorKind:'context_invalid'});
+  try {
+    const sessionResponse = await fetch('/api/auth/session', {
+      method: 'GET', credentials: 'include', cache: 'no-store', redirect: 'error'
+    });
+    if (!sessionResponse.ok) {
+      return result({errorKind:'session_unavailable', httpStatus:sessionResponse.status});
+    }
+    const session = await sessionResponse.json();
+    const accessToken = typeof session?.accessToken === 'string' ? session.accessToken : '';
+    if (!accessToken) return result({errorKind:'access_token_unavailable'});
+    let claims = {};
+    try {
+      const encoded = accessToken.split('.')[1] || '';
+      claims = JSON.parse(atob(encoded.replace(/-/g, '+').replace(/_/g, '/')));
+    } catch {}
+    const authClaims = claims?.['https://api.openai.com/auth'];
+    const accountCandidates = [
+      session?.account?.id, session?.account?.account_id, session?.accountId, session?.account_id,
+      session?.user?.accountId, session?.user?.account_id, claims?.chatgpt_account_id,
+      claims?.account_id, authClaims?.chatgpt_account_id, authClaims?.account_id
+    ];
+    const accountID = accountCandidates.find(value => typeof value === 'string' && value.length > 0) || '';
+    const headers = {authorization: 'Bearer ' + accessToken};
+    if (accountID) {
+      const subscriptionResponse = await fetch(
+        '/backend-api/subscriptions?account_id=' + encodeURIComponent(accountID),
+        {method:'GET', credentials:'include', cache:'no-store', redirect:'error', headers}
+      );
+      if (subscriptionResponse.ok) {
+        const subscription = await subscriptionResponse.json();
+        const plan = typeof subscription?.plan_type === 'string'
+          ? subscription.plan_type.toLowerCase() : '';
+        const activeUntil = Date.parse(typeof subscription?.active_until === 'string'
+          ? subscription.active_until : '');
+        const paidPlan = ['plus', 'prolite', 'pro', 'team', 'business', 'enterprise'].includes(plan);
+        if (paidPlan && Number.isFinite(activeUntil) && activeUntil > Date.now()
+            && subscription?.is_delinquent !== true) {
+          return result({errorKind:'already_subscribed'});
+        }
+      }
+    }
+    const checkoutResponse = await fetch('/backend-api/payments/checkout', {
+      method: 'POST', credentials: 'include', cache: 'no-store', redirect: 'error',
+      headers: {...headers, 'content-type':'application/json'},
+      body: JSON.stringify({
+        billing_details: {country: 'PH', currency: 'PHP'},
+        checkout_ui_mode: 'hosted',
+        entry_point: 'all_plans_pricing_modal',
+        plan_name: 'chatgptplusplan',
+      })
+    });
+    if (!checkoutResponse.ok) {
+      let alreadyPaid = false;
+      try {
+        const payload = await checkoutResponse.json();
+        const detail = typeof payload?.detail === 'string' ? payload.detail.toLowerCase() : '';
+        alreadyPaid = detail.includes('already paid');
+      } catch {}
+      if (alreadyPaid) return result({errorKind:'already_subscribed', httpStatus:checkoutResponse.status});
+      if (checkoutResponse.status === 401 || checkoutResponse.status === 403) {
+        return result({errorKind:'checkout_unauthorized', httpStatus:checkoutResponse.status});
+      }
+      return result({errorKind:'checkout_rejected', httpStatus:checkoutResponse.status});
+    }
+    const payload = await checkoutResponse.json();
+    return result({
+      responseTag: typeof payload?.tag === 'string' ? payload.tag : '',
+      checkoutURL: typeof payload?.url === 'string' ? payload.url : '',
+      processorEntity: typeof payload?.processor_entity === 'string' ? payload.processor_entity : '',
+      checkoutSessionID: typeof payload?.checkout_session_id === 'string' ? payload.checkout_session_id : ''
+    });
+  } catch {
+    return result({errorKind:'checkout_unavailable'});
+  }
+})()`
+
 const inspectFrameJS = `(() => {
   const allowedOrigins = new Set(['https://chatgpt.com', 'https://pay.openai.com', 'https://js.stripe.com']);
   const origin = allowedOrigins.has(location.origin) ? location.origin : null;
@@ -7,7 +108,8 @@ const inspectFrameJS = `(() => {
   let route = null;
   if (origin === 'https://chatgpt.com') {
     if (path === '/checkout' || path === '/checkout/') route = '/checkout';
-    else if (/^\/checkout\/[A-Za-z0-9_-]+\/?$/.test(path)) route = '/checkout/{id}';
+    else if (/^\/checkout\/[A-Za-z0-9_-]+\/?$/.test(path)
+        || /^\/checkout\/openai_llc\/(?:oaics_|cs_)[A-Za-z0-9_-]+\/?$/.test(path)) route = '/checkout/{id}';
     else if (path === '/settings/subscription' || path === '/settings/subscription/') route = '/settings/subscription';
     else if (path === '/settings/billing' || path === '/settings/billing/') route = '/settings/billing';
     else if (path === '/account/billing/overview' || path === '/account/billing/overview/') route = '/account/billing/overview';
@@ -75,6 +177,7 @@ const inspectFrameJS = `(() => {
       upgradeX5: control([['upgrade-x5', ['[data-testid="upgrade-to-prolite"]', 'button[data-plan="prolite"][data-action="upgrade"]']]]),
       upgradeX20: control([['upgrade-x20', ['[data-testid="upgrade-to-pro"]', 'button[data-plan="pro"][data-action="upgrade"]']]]),
       challenge: control([
+		['challenge-cloudflare', ['#challenge-form', '#challenge-running', 'input[name="cf-turnstile-response"]', 'iframe[src*="challenges.cloudflare.com"]', 'script[src*="/cdn-cgi/challenge-platform/"]']],
         ['challenge-3ds', ['[data-testid="three-d-secure-challenge"]', 'iframe[title="3D Secure authentication"]']],
         ['challenge-captcha', ['[data-testid="captcha-challenge"]']],
         ['challenge-sms', ['[data-testid="sms-verification"]']],

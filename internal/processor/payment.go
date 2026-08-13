@@ -22,7 +22,7 @@ import (
 )
 
 const (
-	paymentAdapterVersion = "go-headless-v1"
+	paymentAdapterVersion = "python-session-card-checkout-v1"
 	paymentCardPageSize   = 100
 	paymentMaxCardPages   = 100
 	paymentRetryDelay     = 5 * time.Minute
@@ -62,6 +62,7 @@ type FundingRecoveryOptions struct {
 type paymentReservation struct {
 	ID                 string
 	FulfillmentID      string
+	ProviderKey        string
 	CardID             sql.NullString
 	PlannedProductCode sql.NullString
 	TargetLane         string
@@ -72,6 +73,7 @@ type paymentReservation struct {
 
 type paymentCard struct {
 	ID                    string
+	ProviderKey           string
 	UpstreamCardID        int64
 	VMCardID              string
 	ProductCode           string
@@ -85,7 +87,9 @@ type paymentCard struct {
 
 type paymentProduct struct {
 	Code               string
+	OpenEnabled        bool
 	OpenFeeCents       int64
+	OpenFeeRate        float64
 	RechargeFeeRate    float64
 	MinimumAmountCents int64
 	MaximumAmountCents int64
@@ -131,6 +135,7 @@ type paymentFundingPlan struct {
 }
 
 type paymentSelection struct {
+	ProviderKey string
 	Kind        string
 	Reservation paymentReservation
 	Card        *paymentCard
@@ -179,6 +184,7 @@ type paymentFundingRequest struct {
 type paymentFundingIntent struct {
 	ID                   string
 	FulfillmentID        string
+	ProviderKey          string
 	Operation            string
 	TargetCardID         sql.NullString
 	ProductCode          sql.NullString
@@ -285,19 +291,19 @@ func (p *Processor) paymentProcessFulfillment(ctx context.Context, fulfillment F
 			if !found {
 				return paymentFailure("PAYMENT_STAGE_SNAPSHOT_CONFLICT", "persisted funding intent is missing its payment stages")
 			}
-			selection := paymentSelection{Reservation: reservation, Snapshot: snapshot, Plan: paymentFundingPlan{Operation: intent.Operation, FeeCents: intent.FeeCents}}
+			selection := paymentSelection{ProviderKey: intent.ProviderKey, Reservation: reservation, Snapshot: snapshot, Plan: paymentFundingPlan{Operation: intent.Operation, FeeCents: intent.FeeCents}}
 			if intent.State == "succeeded" {
 				return p.paymentFinalize(ctx, fulfillment, selection, now)
 			}
-			if err := p.paymentAcquireSpaceXCircuit(ctx, now); err != nil {
+			if err := p.paymentAcquirePlatformCircuit(ctx, intent.ProviderKey, now); err != nil {
 				return p.paymentHandleError(ctx, fulfillment.ID, err, now)
 			}
 			if _, err := p.transition(ctx, fulfillment.ID, "FUNDING", now, transitionOptions{CurrentStage: pointer("plus")}); err != nil {
 				return err
 			}
-			client, err := p.spaceXClient(ctx)
+			client, err := p.cardPlatform(ctx, intent.ProviderKey)
 			if err != nil {
-				p.paymentRecordSpaceXFailure(ctx, err, now)
+				p.paymentRecordPlatformFailure(ctx, intent.ProviderKey, err, now)
 			} else {
 				err = p.paymentSubmitFundingIntent(ctx, client, fulfillment.ID, gate, now)
 			}
@@ -310,20 +316,6 @@ func (p *Processor) paymentProcessFulfillment(ctx context.Context, fulfillment F
 		}
 	}
 
-	if err := p.paymentAcquireSpaceXCircuit(ctx, now); err != nil {
-		return p.paymentHandleError(ctx, fulfillment.ID, err, now)
-	}
-	client, err := p.spaceXClient(ctx)
-	if err != nil {
-		p.paymentRecordSpaceXFailure(ctx, err, now)
-		return p.paymentHandleError(ctx, fulfillment.ID, err, now)
-	}
-	facts, err := p.paymentLoadFundingFacts(ctx, client)
-	if err != nil {
-		p.paymentRecordSpaceXFailure(ctx, err, now)
-		return p.paymentHandleError(ctx, fulfillment.ID, err, now)
-	}
-	p.paymentRecordSpaceXSuccess(ctx, now)
 	// Reload after provider I/O so all durable selection decisions use current state.
 	fulfillment, err = loadFulfillment(ctx, p.store.DB(), fulfillment.ID)
 	if err != nil {
@@ -343,14 +335,10 @@ func (p *Processor) paymentProcessFulfillment(ctx context.Context, fulfillment F
 			return p.paymentHandleError(ctx, fulfillment.ID, err, now)
 		}
 	}
-	selection, err := p.paymentChooseAndReserve(ctx, client, fulfillment, facts, now)
+	selection, client, err := p.paymentSelectPlatform(ctx, fulfillment, now)
 	if err != nil {
-		if paymentIsSpaceXFailure(err) {
-			p.paymentRecordSpaceXFailure(ctx, err, now)
-		}
 		return p.paymentHandleError(ctx, fulfillment.ID, err, now)
 	}
-	p.paymentRecordSpaceXSuccess(ctx, now)
 	if err := p.paymentEnsureStageSnapshots(ctx, fulfillment, selection, contracts, paymentAdapterVersion, now); err != nil {
 		return p.paymentHandleError(ctx, fulfillment.ID, err, now)
 	}
@@ -384,12 +372,21 @@ func (p *Processor) paymentProcessFulfillment(ctx context.Context, fulfillment F
 }
 
 func (p *Processor) paymentAcquireSpaceXCircuit(ctx context.Context, now time.Time) error {
-	allowed, err := p.acquireCircuit(ctx, "spacexcard_openapi", "default", now)
+	return p.paymentAcquirePlatformCircuit(ctx, provider.CardPlatformSpaceX, now)
+}
+
+func (p *Processor) paymentAcquirePlatformCircuit(ctx context.Context, platformKey string, now time.Time) error {
+	dependency, scope := cardPlatformCircuit(platformKey)
+	allowed, err := p.acquireCircuit(ctx, dependency, scope, now)
 	if err != nil {
 		return err
 	}
 	if !allowed {
-		return paymentFailure("SPACEXCARD_CIRCUIT_OPEN", "SpaceX Card dependency circuit is open", true)
+		code := "CARD_PLATFORM_CIRCUIT_OPEN"
+		if platformKey == provider.CardPlatformSpaceX {
+			code = "SPACEXCARD_CIRCUIT_OPEN"
+		}
+		return paymentFailure(code, "card platform dependency circuit is open", true)
 	}
 	return nil
 }
@@ -399,14 +396,81 @@ func paymentIsSpaceXFailure(err error) bool {
 	return strings.HasPrefix(code, "SPACEXCARD_") || strings.HasPrefix(code, "PAYMENT_PROVIDER_")
 }
 
+func paymentIsPlatformFailure(err error) bool {
+	code := errorCode(err)
+	return strings.HasPrefix(code, "SPACEXCARD_") || strings.HasPrefix(code, "EFUNCARD_") ||
+		strings.HasPrefix(code, "CARD_PLATFORM_") || strings.HasPrefix(code, "PAYMENT_PROVIDER_")
+}
+
 func (p *Processor) paymentRecordSpaceXFailure(ctx context.Context, cause error, now time.Time) {
+	p.paymentRecordPlatformFailure(ctx, provider.CardPlatformSpaceX, cause, now)
+}
+
+func (p *Processor) paymentRecordPlatformFailure(ctx context.Context, platformKey string, cause error, now time.Time) {
 	// Circuit bookkeeping must never replace the fulfillment's original durable transition.
-	_ = p.recordCircuitFailure(ctx, "spacexcard_openapi", "default", cause, now)
+	dependency, scope := cardPlatformCircuit(platformKey)
+	_ = p.recordCircuitFailure(ctx, dependency, scope, cause, now)
 }
 
 func (p *Processor) paymentRecordSpaceXSuccess(ctx context.Context, now time.Time) {
+	p.paymentRecordPlatformSuccess(ctx, provider.CardPlatformSpaceX, now)
+}
+
+func (p *Processor) paymentRecordPlatformSuccess(ctx context.Context, platformKey string, now time.Time) {
 	// Circuit bookkeeping must never replace the fulfillment's original durable transition.
-	_ = p.recordCircuitSuccess(ctx, "spacexcard_openapi", "default", now)
+	dependency, scope := cardPlatformCircuit(platformKey)
+	_ = p.recordCircuitSuccess(ctx, dependency, scope, now)
+}
+
+func (p *Processor) paymentSelectPlatform(ctx context.Context, fulfillment Fulfillment, now time.Time) (paymentSelection, provider.CardPlatform, error) {
+	keys, err := p.enabledCardPlatformKeys(ctx)
+	if err != nil {
+		return paymentSelection{}, nil, err
+	}
+	if reservation, found, err := p.paymentExistingReservation(ctx, fulfillment.ID); err != nil {
+		return paymentSelection{}, nil, err
+	} else if found {
+		keys = []string{reservation.ProviderKey}
+	}
+	if len(keys) == 0 {
+		return paymentSelection{}, nil, paymentFailure("CARD_PLATFORM_NOT_CONFIGURED", "no enabled card platform is configured", true)
+	}
+	var lastUnavailable error
+	for _, key := range keys {
+		if err := p.paymentAcquirePlatformCircuit(ctx, key, now); err != nil {
+			lastUnavailable = err
+			continue
+		}
+		client, err := p.cardPlatform(ctx, key)
+		if err != nil {
+			p.paymentRecordPlatformFailure(ctx, key, err, now)
+			lastUnavailable = err
+			continue
+		}
+		facts, err := p.paymentLoadFundingFacts(ctx, client)
+		if err != nil {
+			p.paymentRecordPlatformFailure(ctx, key, err, now)
+			lastUnavailable = err
+			continue
+		}
+		selection, err := p.paymentChooseAndReserve(ctx, client, fulfillment, facts, now)
+		if err == nil {
+			p.paymentRecordPlatformSuccess(ctx, key, now)
+			return selection, client, nil
+		}
+		if paymentIsPlatformFailure(err) {
+			p.paymentRecordPlatformFailure(ctx, key, err, now)
+		}
+		if errorCode(err) == "CARD_PRICE_UNAVAILABLE" || errorCode(err) == "PAYMENT_RESERVED_CARD_UNSUPPORTED" {
+			lastUnavailable = err
+			continue
+		}
+		return paymentSelection{}, nil, err
+	}
+	if lastUnavailable != nil {
+		return paymentSelection{}, nil, lastUnavailable
+	}
+	return paymentSelection{}, nil, paymentFailure("CARD_PRICE_UNAVAILABLE", "no enabled card platform can satisfy this order", true)
 }
 
 func (p *Processor) paymentHandleError(ctx context.Context, fulfillmentID string, cause error, now time.Time) error {
@@ -427,7 +491,8 @@ func (p *Processor) paymentHandleError(ctx context.Context, fulfillmentID string
 	}
 	priceUnavailable := code == "CARD_PRICE_UNAVAILABLE" || code == "PAYMENT_PRICE_CONTRACT_MISSING" || code == "PAYMENT_PRICE_CONTRACT_AMBIGUOUS"
 	automatic := strings.HasPrefix(code, "AUTOMATIC_")
-	providerRetry := strings.HasPrefix(code, "SPACEXCARD_") || paymentIsRetryable(cause)
+	providerRetry := strings.HasPrefix(code, "SPACEXCARD_") || strings.HasPrefix(code, "EFUNCARD_") ||
+		strings.HasPrefix(code, "CARD_PLATFORM_") || paymentIsRetryable(cause)
 	if priceUnavailable || automatic || providerRetry {
 		next := "FUNDING_READY"
 		if priceUnavailable {
@@ -529,7 +594,7 @@ func paymentAddCents(left, right int64) (int64, error) {
 	return left + right, nil
 }
 
-func (p *Processor) paymentLoadFundingFacts(ctx context.Context, client *provider.SpaceXClient) (paymentFundingFacts, error) {
+func (p *Processor) paymentLoadFundingFacts(ctx context.Context, client provider.CardPlatform) (paymentFundingFacts, error) {
 	balance, err := client.GetBalance(ctx)
 	if err != nil {
 		return paymentFundingFacts{}, err
@@ -538,11 +603,11 @@ func (p *Processor) paymentLoadFundingFacts(ctx context.Context, client *provide
 		return paymentFundingFacts{}, err
 	}
 	if strings.ToUpper(strings.TrimSpace(balance.Currency)) != "USD" {
-		return paymentFundingFacts{}, paymentFailure("PAYMENT_PROVIDER_BALANCE_INVALID", "SpaceX Card platform balance is not USD", true)
+		return paymentFundingFacts{}, paymentFailure("PAYMENT_PROVIDER_BALANCE_INVALID", "card platform balance is not normalized to USD", true)
 	}
 	balanceCents, err := paymentRoundedCents(balance.Balance, false)
 	if err != nil {
-		return paymentFundingFacts{}, paymentFailure("PAYMENT_PROVIDER_BALANCE_INVALID", "SpaceX Card platform balance is invalid", true)
+		return paymentFundingFacts{}, paymentFailure("PAYMENT_PROVIDER_BALANCE_INVALID", "card platform balance is invalid", true)
 	}
 	products, err := client.ListProducts(ctx)
 	if err != nil {
@@ -558,18 +623,19 @@ func (p *Processor) paymentLoadFundingFacts(ctx context.Context, client *provide
 		minimum, minErr := paymentRoundedCents(product.MinAmount, false)
 		maximum, maxErr := paymentRoundedCents(product.MaxAmount, true)
 		if code == "" || catalog[code].Code != "" || openErr != nil || minErr != nil || maxErr != nil || maximum < minimum ||
+			math.IsNaN(product.OpenFeeRate) || math.IsInf(product.OpenFeeRate, 0) || product.OpenFeeRate < 0 || product.OpenFeeRate > 1 ||
 			math.IsNaN(product.RechargeFee) || math.IsInf(product.RechargeFee, 0) || product.RechargeFee < 0 || product.RechargeFee > 1 {
-			return paymentFundingFacts{}, paymentFailure("PAYMENT_PROVIDER_PRODUCTS_INVALID", "SpaceX Card product catalog is invalid", true)
+			return paymentFundingFacts{}, paymentFailure("PAYMENT_PROVIDER_PRODUCTS_INVALID", "card platform product catalog is invalid", true)
 		}
 		catalog[code] = paymentProduct{
-			Code: code, OpenFeeCents: openFee, RechargeFeeRate: product.RechargeFee,
+			Code: code, OpenEnabled: product.OpenEnabled, OpenFeeCents: openFee, OpenFeeRate: product.OpenFeeRate, RechargeFeeRate: product.RechargeFee,
 			MinimumAmountCents: minimum, MaximumAmountCents: maximum,
 		}
 	}
 	return paymentFundingFacts{PlatformBalanceCents: balanceCents, Products: catalog}, nil
 }
 
-func (p *Processor) paymentLoadLiveCards(ctx context.Context, client *provider.SpaceXClient) (map[int64]provider.Card, error) {
+func (p *Processor) paymentLoadLiveCards(ctx context.Context, client provider.CardPlatform) (map[int64]provider.Card, error) {
 	cards := map[int64]provider.Card{}
 	expectedTotal := -1
 	for page := 1; page <= paymentMaxCardPages; page++ {
@@ -581,36 +647,36 @@ func (p *Processor) paymentLoadLiveCards(ctx context.Context, client *provider.S
 			return nil, err
 		}
 		if total < 0 {
-			return nil, paymentFailure("PAYMENT_PROVIDER_CARD_LIST_INVALID", "SpaceX Card list total is invalid", true)
+			return nil, paymentFailure("PAYMENT_PROVIDER_CARD_LIST_INVALID", "card platform list total is invalid", true)
 		}
 		if len(batch) > paymentCardPageSize {
-			return nil, paymentFailure("PAYMENT_PROVIDER_CARD_LIST_INVALID", "SpaceX Card list page exceeds the requested size", true)
+			return nil, paymentFailure("PAYMENT_PROVIDER_CARD_LIST_INVALID", "card platform list page exceeds the requested size", true)
 		}
 		if expectedTotal < 0 {
 			expectedTotal = total
 		} else if total != expectedTotal {
-			return nil, paymentFailure("PAYMENT_PROVIDER_CARD_LIST_INVALID", "SpaceX Card list total changed during pagination", true)
+			return nil, paymentFailure("PAYMENT_PROVIDER_CARD_LIST_INVALID", "card platform list total changed during pagination", true)
 		}
 		for _, card := range batch {
 			if card.UpstreamCardID <= 0 {
-				return nil, paymentFailure("PAYMENT_PROVIDER_CARD_LIST_INVALID", "SpaceX Card list contains an invalid card", true)
+				return nil, paymentFailure("PAYMENT_PROVIDER_CARD_LIST_INVALID", "card platform list contains an invalid card", true)
 			}
 			if _, duplicate := cards[card.UpstreamCardID]; duplicate {
-				return nil, paymentFailure("PAYMENT_PROVIDER_CARD_LIST_INVALID", "SpaceX Card list contains a duplicate card", true)
+				return nil, paymentFailure("PAYMENT_PROVIDER_CARD_LIST_INVALID", "card platform list contains a duplicate card", true)
 			}
 			cards[card.UpstreamCardID] = card
 		}
 		if len(cards) > expectedTotal {
-			return nil, paymentFailure("PAYMENT_PROVIDER_CARD_LIST_INVALID", "SpaceX Card list exceeded its declared total", true)
+			return nil, paymentFailure("PAYMENT_PROVIDER_CARD_LIST_INVALID", "card platform list exceeded its declared total", true)
 		}
 		if len(cards) == expectedTotal {
 			return cards, nil
 		}
 		if len(batch) < paymentCardPageSize {
-			return nil, paymentFailure("PAYMENT_PROVIDER_CARD_LIST_INVALID", "SpaceX Card list ended before its declared total", true)
+			return nil, paymentFailure("PAYMENT_PROVIDER_CARD_LIST_INVALID", "card platform list ended before its declared total", true)
 		}
 	}
-	return nil, paymentFailure("PAYMENT_PROVIDER_CARD_LIST_EXCEEDED", "SpaceX Card list exceeded the safe page limit", true)
+	return nil, paymentFailure("PAYMENT_PROVIDER_CARD_LIST_EXCEEDED", "card platform list exceeded the safe page limit", true)
 }
 
 func paymentPlanNewCard(snapshot paymentPriceSnapshot, product paymentProduct, platformBalance int64) (paymentFundingPlan, error) {
@@ -621,13 +687,21 @@ func paymentPlanNewCard(snapshot paymentPriceSnapshot, product paymentProduct, p
 	if funding > product.MaximumAmountCents {
 		return paymentFundingPlan{}, paymentFailure("CARD_PRODUCT_AMOUNT_UNSUPPORTED", "card product cannot cover the full order budget")
 	}
-	debit, err := paymentAddCents(funding, product.OpenFeeCents)
+	variableFee, err := domain.CentsFromUSD(domain.USDFromCents(funding) * product.OpenFeeRate)
+	if err != nil || variableFee < 0 {
+		return paymentFundingPlan{}, paymentFailure("FUNDING_REQUEST_INVALID", "open-card fee is invalid")
+	}
+	fee, err := paymentAddCents(product.OpenFeeCents, variableFee)
+	if err != nil {
+		return paymentFundingPlan{}, paymentFailure("FUNDING_REQUEST_INVALID", "open-card fee overflows")
+	}
+	debit, err := paymentAddCents(funding, fee)
 	if err != nil {
 		return paymentFundingPlan{}, paymentFailure("FUNDING_REQUEST_INVALID", "funding plan overflows")
 	}
 	return paymentFundingPlan{
 		Kind: "new_card", Operation: "open", FullOrderBudgetCents: snapshot.TotalCents,
-		FundingAmountCents: funding, FeeCents: product.OpenFeeCents, PlatformDebitCents: debit,
+		FundingAmountCents: funding, FeeCents: fee, PlatformDebitCents: debit,
 		PlatformBalanceCents: platformBalance, PlatformBalanceSufficient: platformBalance >= debit,
 	}, nil
 }
@@ -679,13 +753,28 @@ func paymentPlanExistingCard(snapshot paymentPriceSnapshot, card paymentCard, li
 
 func (p *Processor) paymentLoadCard(ctx context.Context, query store.Execer, id string) (paymentCard, error) {
 	var card paymentCard
-	err := query.QueryRowContext(ctx, `
+	hasProvider, err := tableHasColumn(ctx, query, "managed_cards", "provider_key")
+	if err != nil {
+		return paymentCard{}, err
+	}
+	if hasProvider {
+		err = query.QueryRowContext(ctx, `
+	    SELECT id,provider_key,upstream_card_id,vm_card_id,product_code,upstream_status,cached_available_amount,
+	      lane,consumed_slots,capacity_state,reconciliation_state
+	    FROM managed_cards WHERE id=?`, id).Scan(
+			&card.ID, &card.ProviderKey, &card.UpstreamCardID, &card.VMCardID, &card.ProductCode, &card.UpstreamStatus,
+			&card.CachedAvailableAmount, &card.Lane, &card.ConsumedSlots, &card.CapacityState, &card.ReconciliationState,
+		)
+	} else {
+		card.ProviderKey = provider.CardPlatformSpaceX
+		err = query.QueryRowContext(ctx, `
     SELECT id,upstream_card_id,vm_card_id,product_code,upstream_status,cached_available_amount,
       lane,consumed_slots,capacity_state,reconciliation_state
     FROM managed_cards WHERE id=?`, id).Scan(
-		&card.ID, &card.UpstreamCardID, &card.VMCardID, &card.ProductCode, &card.UpstreamStatus,
-		&card.CachedAvailableAmount, &card.Lane, &card.ConsumedSlots, &card.CapacityState, &card.ReconciliationState,
-	)
+			&card.ID, &card.UpstreamCardID, &card.VMCardID, &card.ProductCode, &card.UpstreamStatus,
+			&card.CachedAvailableAmount, &card.Lane, &card.ConsumedSlots, &card.CapacityState, &card.ReconciliationState,
+		)
+	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return paymentCard{}, paymentFailure("MEMBERSHIP_CARD_NOT_FOUND", "managed card does not exist")
 	}
@@ -791,10 +880,26 @@ func (p *Processor) paymentLoadPriceSnapshot(ctx context.Context, cardID string,
 }
 
 func (p *Processor) paymentLoadProvenProductSnapshot(ctx context.Context, productCode string, target domain.Tier, now time.Time) (paymentPriceSnapshot, error) {
-	rows, err := p.store.DB().QueryContext(ctx, `
-    SELECT id FROM managed_cards
-    WHERE product_code=? AND upstream_status='ACTIVE' AND reconciliation_state='READY'
-    ORDER BY id`, productCode)
+	return p.paymentLoadProvenProductSnapshotForPlatform(ctx, provider.CardPlatformSpaceX, productCode, target, now)
+}
+
+func (p *Processor) paymentLoadProvenProductSnapshotForPlatform(ctx context.Context, platformKey, productCode string, target domain.Tier, now time.Time) (paymentPriceSnapshot, error) {
+	hasProvider, err := tableHasColumn(ctx, p.store.DB(), "managed_cards", "provider_key")
+	if err != nil {
+		return paymentPriceSnapshot{}, err
+	}
+	var rows *sql.Rows
+	if hasProvider {
+		rows, err = p.store.DB().QueryContext(ctx, `
+	    SELECT c.id FROM managed_cards c
+	    WHERE c.provider_key=? AND c.product_code=? AND `+productPriceEvidenceCardWhereSQL+`
+	    ORDER BY c.id`, platformKey, productCode)
+	} else {
+		rows, err = p.store.DB().QueryContext(ctx, `
+	    SELECT c.id FROM managed_cards c
+	    WHERE c.product_code=? AND `+productPriceEvidenceCardWhereSQL+`
+	    ORDER BY c.id`, productCode)
+	}
 	if err != nil {
 		return paymentPriceSnapshot{}, err
 	}
@@ -977,20 +1082,11 @@ func (p *Processor) paymentResolveAutomaticScope(ctx context.Context, fulfillmen
 }
 
 func (p *Processor) paymentExistingReservation(ctx context.Context, fulfillmentID string) (paymentReservation, bool, error) {
-	var reservation paymentReservation
-	err := p.store.DB().QueryRowContext(ctx, `
-    SELECT id,fulfillment_id,card_id,planned_product_code,target_lane,slot_index,state,reserved_at
-    FROM card_capacity_reservations WHERE fulfillment_id=?`, fulfillmentID).Scan(
-		&reservation.ID, &reservation.FulfillmentID, &reservation.CardID, &reservation.PlannedProductCode,
-		&reservation.TargetLane, &reservation.SlotIndex, &reservation.State, &reservation.ReservedAt,
-	)
-	if errors.Is(err, sql.ErrNoRows) {
-		return paymentReservation{}, false, nil
-	}
-	return reservation, err == nil, err
+	return paymentLoadReservationWith(ctx, p.store.DB(), fulfillmentID)
 }
 
-func (p *Processor) paymentChooseAndReserve(ctx context.Context, client *provider.SpaceXClient, fulfillment Fulfillment, facts paymentFundingFacts, now time.Time) (paymentSelection, error) {
+func (p *Processor) paymentChooseAndReserve(ctx context.Context, client provider.CardPlatform, fulfillment Fulfillment, facts paymentFundingFacts, now time.Time) (paymentSelection, error) {
+	platformKey := client.Key()
 	liveCards, err := p.paymentLoadLiveCards(ctx, client)
 	if err != nil {
 		return paymentSelection{}, err
@@ -1006,9 +1102,9 @@ func (p *Processor) paymentChooseAndReserve(ctx context.Context, client *provide
     SELECT id,upstream_card_id,vm_card_id,product_code,upstream_status,cached_available_amount,
       lane,consumed_slots,capacity_state,reconciliation_state
     FROM managed_cards
-    WHERE upstream_status='ACTIVE' AND reconciliation_state='READY'
+	    WHERE provider_key=? AND upstream_status='ACTIVE' AND reconciliation_state='READY'
       AND capacity_state<>'HOLD' AND (lane IS NULL OR lane=?)
-    ORDER BY id`, fulfillment.TargetTier)
+	    ORDER BY id`, platformKey, fulfillment.TargetTier)
 	if err != nil {
 		return paymentSelection{}, err
 	}
@@ -1021,6 +1117,7 @@ func (p *Processor) paymentChooseAndReserve(ctx context.Context, client *provide
 	var cards []paymentCard
 	for rows.Next() {
 		var card paymentCard
+		card.ProviderKey = platformKey
 		if err := rows.Scan(&card.ID, &card.UpstreamCardID, &card.VMCardID, &card.ProductCode, &card.UpstreamStatus,
 			&card.CachedAvailableAmount, &card.Lane, &card.ConsumedSlots, &card.CapacityState, &card.ReconciliationState); err != nil {
 			rows.Close()
@@ -1079,7 +1176,7 @@ func (p *Processor) paymentChooseAndReserve(ctx context.Context, client *provide
 	}
 	for _, rankedCard := range ranked {
 		candidate := candidates[rankedCard.ID]
-		reservation, err := p.paymentReserveExistingCard(ctx, fulfillment.ID, candidate.card.ID, target, now)
+		reservation, err := p.paymentReserveExistingCard(ctx, fulfillment.ID, candidate.card.ProviderKey, candidate.card.ID, target, now)
 		if err != nil {
 			if won, found, loadErr := p.paymentExistingReservation(ctx, fulfillment.ID); loadErr != nil {
 				return paymentSelection{}, loadErr
@@ -1099,12 +1196,12 @@ func (p *Processor) paymentChooseAndReserve(ctx context.Context, client *provide
 			return paymentSelection{}, err
 		}
 		card, live := candidate.card, candidate.live
-		return paymentSelection{Kind: "existing_card", Reservation: reservation, Card: &card,
+		return paymentSelection{ProviderKey: platformKey, Kind: "existing_card", Reservation: reservation, Card: &card,
 			Snapshot: candidate.snapshot, Plan: candidate.plan, Live: &live}, nil
 	}
 
 	productRows, err := p.store.DB().QueryContext(ctx, `
-    SELECT product_code FROM card_product_policies WHERE enabled=1 ORDER BY product_code`)
+	    SELECT product_code FROM card_product_policies WHERE provider_key=? AND enabled=1 ORDER BY product_code`, platformKey)
 	if err != nil {
 		return paymentSelection{}, err
 	}
@@ -1128,10 +1225,10 @@ func (p *Processor) paymentChooseAndReserve(ctx context.Context, client *provide
 	var newCards []newCandidate
 	for _, code := range productCodes {
 		product, found := facts.Products[code]
-		if !found {
+		if !found || !product.OpenEnabled {
 			continue
 		}
-		snapshot, err := p.paymentLoadProvenProductSnapshot(ctx, code, target, now)
+		snapshot, err := p.paymentLoadProvenProductSnapshotForPlatform(ctx, platformKey, code, target, now)
 		if err != nil {
 			if errorCode(err) == "CARD_PRICE_UNAVAILABLE" {
 				continue
@@ -1157,17 +1254,21 @@ func (p *Processor) paymentChooseAndReserve(ctx context.Context, client *provide
 		return paymentSelection{}, paymentFailure("CARD_PRICE_UNAVAILABLE", "no existing card or enabled new-card product is eligible", true)
 	}
 	selected := newCards[0]
-	reservation, err := p.paymentReserveNewCard(ctx, fulfillment.ID, selected.product.Code, target, now)
+	reservation, err := p.paymentReserveNewCard(ctx, fulfillment.ID, platformKey, selected.product.Code, target, now)
 	if err != nil {
 		return paymentSelection{}, err
 	}
 	product := selected.product
-	return paymentSelection{Kind: "new_card", Reservation: reservation, Product: &product,
+	return paymentSelection{ProviderKey: platformKey, Kind: "new_card", Reservation: reservation, Product: &product,
 		Snapshot: selected.snapshot, Plan: selected.plan}, nil
 }
 
 func (p *Processor) paymentSelectionFromReservation(ctx context.Context, fulfillment Fulfillment, reservation paymentReservation,
 	liveCards map[int64]provider.Card, facts paymentFundingFacts, now time.Time) (paymentSelection, error) {
+	platformKey := reservation.ProviderKey
+	if platformKey == "" {
+		platformKey = provider.CardPlatformSpaceX
+	}
 	if reservation.State != "reserved" {
 		return paymentSelection{}, paymentFailure("PAYMENT_CARD_RESERVATION_INACTIVE", "payment reservation is no longer active")
 	}
@@ -1209,7 +1310,7 @@ func (p *Processor) paymentSelectionFromReservation(ctx context.Context, fulfill
 			}
 			return paymentSelection{}, err
 		}
-		return paymentSelection{Kind: "existing_card", Reservation: reservation, Card: &card,
+		return paymentSelection{ProviderKey: platformKey, Kind: "existing_card", Reservation: reservation, Card: &card,
 			Snapshot: snapshot, Plan: plan, Live: &live}, nil
 	}
 	if !reservation.PlannedProductCode.Valid || reservation.PlannedProductCode.String == "" {
@@ -1220,7 +1321,7 @@ func (p *Processor) paymentSelectionFromReservation(ctx context.Context, fulfill
 		return paymentSelection{}, err
 	}
 	if !found {
-		snapshot, err = p.paymentLoadProvenProductSnapshot(ctx, reservation.PlannedProductCode.String, target, now)
+		snapshot, err = p.paymentLoadProvenProductSnapshotForPlatform(ctx, platformKey, reservation.PlannedProductCode.String, target, now)
 		if err != nil {
 			return paymentSelection{}, err
 		}
@@ -1233,20 +1334,40 @@ func (p *Processor) paymentSelectionFromReservation(ctx context.Context, fulfill
 	if err != nil {
 		return paymentSelection{}, err
 	}
-	return paymentSelection{Kind: "new_card", Reservation: reservation, Product: &product, Snapshot: snapshot, Plan: plan}, nil
+	return paymentSelection{ProviderKey: platformKey, Kind: "new_card", Reservation: reservation, Product: &product, Snapshot: snapshot, Plan: plan}, nil
 }
 
-func paymentScanReservation(row scanner) (paymentReservation, error) {
+func paymentScanReservation(row scanner, providerAware bool) (paymentReservation, error) {
 	var reservation paymentReservation
-	err := row.Scan(&reservation.ID, &reservation.FulfillmentID, &reservation.CardID, &reservation.PlannedProductCode,
-		&reservation.TargetLane, &reservation.SlotIndex, &reservation.State, &reservation.ReservedAt)
+	var err error
+	if providerAware {
+		err = row.Scan(&reservation.ID, &reservation.FulfillmentID, &reservation.ProviderKey, &reservation.CardID, &reservation.PlannedProductCode,
+			&reservation.TargetLane, &reservation.SlotIndex, &reservation.State, &reservation.ReservedAt)
+	} else {
+		reservation.ProviderKey = provider.CardPlatformSpaceX
+		err = row.Scan(&reservation.ID, &reservation.FulfillmentID, &reservation.CardID, &reservation.PlannedProductCode,
+			&reservation.TargetLane, &reservation.SlotIndex, &reservation.State, &reservation.ReservedAt)
+	}
 	return reservation, err
 }
 
 func paymentLoadReservationWith(ctx context.Context, query store.Execer, fulfillmentID string) (paymentReservation, bool, error) {
+	hasProvider, err := tableHasColumn(ctx, query, "card_capacity_reservations", "provider_key")
+	if err != nil {
+		return paymentReservation{}, false, err
+	}
+	if hasProvider {
+		reservation, err := paymentScanReservation(query.QueryRowContext(ctx, `
+	    SELECT id,fulfillment_id,provider_key,card_id,planned_product_code,target_lane,slot_index,state,reserved_at
+	    FROM card_capacity_reservations WHERE fulfillment_id=?`, fulfillmentID), true)
+		if errors.Is(err, sql.ErrNoRows) {
+			return paymentReservation{}, false, nil
+		}
+		return reservation, err == nil, err
+	}
 	reservation, err := paymentScanReservation(query.QueryRowContext(ctx, `
     SELECT id,fulfillment_id,card_id,planned_product_code,target_lane,slot_index,state,reserved_at
-    FROM card_capacity_reservations WHERE fulfillment_id=?`, fulfillmentID))
+	    FROM card_capacity_reservations WHERE fulfillment_id=?`, fulfillmentID), false)
 	if errors.Is(err, sql.ErrNoRows) {
 		return paymentReservation{}, false, nil
 	}
@@ -1331,8 +1452,8 @@ func paymentUpdateCapacityState(ctx context.Context, tx *sql.Tx, card paymentCar
 	return err
 }
 
-func paymentReservationMatches(existing paymentReservation, target domain.Tier, cardID, productCode string) bool {
-	if existing.TargetLane != string(target) {
+func paymentReservationMatches(existing paymentReservation, platformKey string, target domain.Tier, cardID, productCode string) bool {
+	if existing.ProviderKey != platformKey || existing.TargetLane != string(target) {
 		return false
 	}
 	if cardID != "" {
@@ -1344,7 +1465,7 @@ func paymentReservationMatches(existing paymentReservation, target domain.Tier, 
 	return false
 }
 
-func (p *Processor) paymentReserveExistingCard(ctx context.Context, fulfillmentID, cardID string, target domain.Tier, now time.Time) (paymentReservation, error) {
+func (p *Processor) paymentReserveExistingCard(ctx context.Context, fulfillmentID, platformKey, cardID string, target domain.Tier, now time.Time) (paymentReservation, error) {
 	var reserved paymentReservation
 	err := p.withFencedImmediate(ctx, func(tx *sql.Tx) error {
 		var fulfillmentTier string
@@ -1364,13 +1485,19 @@ func (p *Processor) paymentReserveExistingCard(ctx context.Context, fulfillmentI
 			if existing.State == "released" {
 				return paymentFailure("CARD_RESERVATION_RELEASED", "released card reservation cannot be replaced")
 			}
-			if !paymentReservationMatches(existing, target, cardID, "") || (linked.Valid && linked.String != existing.ID) {
+			if !paymentReservationMatches(existing, platformKey, target, cardID, "") || (linked.Valid && linked.String != existing.ID) {
 				return paymentFailure("CARD_RESERVATION_CONFLICT", "fulfillment cannot replace its card reservation", true)
 			}
 			if !linked.Valid {
-				if _, err := tx.ExecContext(ctx, `UPDATE membership_fulfillments SET card_reservation_id=? WHERE id=?`, existing.ID, fulfillmentID); err != nil {
+				if _, err := tx.ExecContext(ctx, `UPDATE membership_fulfillments
+          SET card_reservation_id=?,money_boundary_at=COALESCE(money_boundary_at,?),updated_at=?
+          WHERE id=?`, existing.ID, store.ISO(now), store.ISO(now), fulfillmentID); err != nil {
 					return err
 				}
+			} else if _, err := tx.ExecContext(ctx, `UPDATE membership_fulfillments
+        SET money_boundary_at=COALESCE(money_boundary_at,?),updated_at=? WHERE id=?`,
+				store.ISO(now), store.ISO(now), fulfillmentID); err != nil {
+				return err
 			}
 			reserved = existing
 			return nil
@@ -1381,6 +1508,9 @@ func (p *Processor) paymentReserveExistingCard(ctx context.Context, fulfillmentI
 		}
 		if err := paymentAssertCardReservable(card, target); err != nil {
 			return err
+		}
+		if card.ProviderKey != platformKey {
+			return paymentFailure("CARD_RESERVATION_CONFLICT", "managed card belongs to another platform")
 		}
 		slot, err := paymentFirstFreeSlot(ctx, tx, card, target)
 		if err != nil {
@@ -1399,25 +1529,27 @@ func (p *Processor) paymentReserveExistingCard(ctx context.Context, fulfillmentI
 		}
 		if _, err := tx.ExecContext(ctx, `
       INSERT INTO card_capacity_reservations
-        (id,fulfillment_id,card_id,planned_product_code,target_lane,slot_index,state,reserved_at)
-      VALUES (?,?,?,NULL,?,?,'reserved',?)`, id, fulfillmentID, card.ID, string(target), slot, at); err != nil {
+	        (id,fulfillment_id,provider_key,card_id,planned_product_code,target_lane,slot_index,state,reserved_at)
+	      VALUES (?,?,?, ?,NULL,?,?,'reserved',?)`, id, fulfillmentID, card.ProviderKey, card.ID, string(target), slot, at); err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE membership_fulfillments SET card_reservation_id=?,updated_at=? WHERE id=?`, id, at, fulfillmentID); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE membership_fulfillments
+      SET card_reservation_id=?,money_boundary_at=COALESCE(money_boundary_at,?),updated_at=?
+      WHERE id=?`, id, at, at, fulfillmentID); err != nil {
 			return err
 		}
 		if err := paymentUpdateCapacityState(ctx, tx, card, target, now); err != nil {
 			return err
 		}
 		reserved, err = paymentScanReservation(tx.QueryRowContext(ctx, `
-      SELECT id,fulfillment_id,card_id,planned_product_code,target_lane,slot_index,state,reserved_at
-      FROM card_capacity_reservations WHERE id=?`, id))
+	      SELECT id,fulfillment_id,provider_key,card_id,planned_product_code,target_lane,slot_index,state,reserved_at
+	      FROM card_capacity_reservations WHERE id=?`, id), true)
 		return err
 	})
 	return reserved, paymentReservationDBError(err)
 }
 
-func (p *Processor) paymentReserveNewCard(ctx context.Context, fulfillmentID, productCode string, target domain.Tier, now time.Time) (paymentReservation, error) {
+func (p *Processor) paymentReserveNewCard(ctx context.Context, fulfillmentID, platformKey, productCode string, target domain.Tier, now time.Time) (paymentReservation, error) {
 	var reserved paymentReservation
 	err := p.withFencedImmediate(ctx, func(tx *sql.Tx) error {
 		var fulfillmentTier string
@@ -1437,7 +1569,7 @@ func (p *Processor) paymentReserveNewCard(ctx context.Context, fulfillmentID, pr
 			if existing.State == "released" {
 				return paymentFailure("CARD_RESERVATION_RELEASED", "released card reservation cannot be replaced")
 			}
-			if !paymentReservationMatches(existing, target, "", productCode) || (linked.Valid && linked.String != existing.ID) {
+			if !paymentReservationMatches(existing, platformKey, target, "", productCode) || (linked.Valid && linked.String != existing.ID) {
 				return paymentFailure("CARD_RESERVATION_CONFLICT", "fulfillment cannot replace its new-card plan", true)
 			}
 			if !linked.Valid {
@@ -1455,16 +1587,16 @@ func (p *Processor) paymentReserveNewCard(ctx context.Context, fulfillmentID, pr
 		at := store.ISO(now)
 		if _, err := tx.ExecContext(ctx, `
       INSERT INTO card_capacity_reservations
-        (id,fulfillment_id,card_id,planned_product_code,target_lane,slot_index,state,reserved_at)
-      VALUES (?,?,NULL,?,?,NULL,'reserved',?)`, id, fulfillmentID, productCode, string(target), at); err != nil {
+	        (id,fulfillment_id,provider_key,card_id,planned_product_code,target_lane,slot_index,state,reserved_at)
+	      VALUES (?,?,?,NULL,?,?,NULL,'reserved',?)`, id, fulfillmentID, platformKey, productCode, string(target), at); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE membership_fulfillments SET card_reservation_id=?,updated_at=? WHERE id=?`, id, at, fulfillmentID); err != nil {
 			return err
 		}
 		reserved, err = paymentScanReservation(tx.QueryRowContext(ctx, `
-      SELECT id,fulfillment_id,card_id,planned_product_code,target_lane,slot_index,state,reserved_at
-      FROM card_capacity_reservations WHERE id=?`, id))
+	      SELECT id,fulfillment_id,provider_key,card_id,planned_product_code,target_lane,slot_index,state,reserved_at
+	      FROM card_capacity_reservations WHERE id=?`, id), true)
 		return err
 	})
 	return reserved, paymentReservationDBError(err)
@@ -1899,7 +2031,7 @@ func (p *Processor) paymentBuildFundingRequest(ctx context.Context, fulfillment 
 func paymentScanFundingIntent(row scanner) (paymentFundingIntent, error) {
 	var intent paymentFundingIntent
 	var amount, fee float64
-	err := row.Scan(&intent.ID, &intent.FulfillmentID, &intent.Operation, &intent.TargetCardID, &intent.ProductCode,
+	err := row.Scan(&intent.ID, &intent.FulfillmentID, &intent.ProviderKey, &intent.Operation, &intent.TargetCardID, &intent.ProductCode,
 		&amount, &fee, &intent.IdempotencyKey, &intent.RequestFingerprint, &intent.RequestBodyEncrypted,
 		&intent.State, &intent.ProviderResourceID, &intent.CreatedAt, &intent.SubmittedAt, &intent.ResolvedAt)
 	if err != nil {
@@ -1917,8 +2049,15 @@ func paymentScanFundingIntent(row scanner) (paymentFundingIntent, error) {
 }
 
 func paymentLoadFundingIntentWith(ctx context.Context, query store.Execer, fulfillmentID string) (*paymentFundingIntent, error) {
+	hasProvider, err := tableHasColumn(ctx, query, "funding_intents", "provider_key")
+	if err != nil {
+		return nil, err
+	}
+	if !hasProvider {
+		return paymentLoadLegacyFundingIntentWith(ctx, query, fulfillmentID)
+	}
 	intent, err := paymentScanFundingIntent(query.QueryRowContext(ctx, `
-    SELECT id,fulfillment_id,operation,target_card_id,product_code,amount,fee,idempotency_key,
+	    SELECT id,fulfillment_id,provider_key,operation,target_card_id,product_code,amount,fee,idempotency_key,
       request_fingerprint,request_body_encrypted,state,provider_resource_id,created_at,submitted_at,resolved_at
     FROM funding_intents WHERE fulfillment_id=?`, fulfillmentID))
 	if errors.Is(err, sql.ErrNoRows) {
@@ -1926,6 +2065,34 @@ func paymentLoadFundingIntentWith(ctx context.Context, query store.Execer, fulfi
 	}
 	if err != nil {
 		return nil, err
+	}
+	return &intent, nil
+}
+
+func paymentLoadLegacyFundingIntentWith(ctx context.Context, query store.Execer, fulfillmentID string) (*paymentFundingIntent, error) {
+	var intent paymentFundingIntent
+	var amount, fee float64
+	err := query.QueryRowContext(ctx, `
+	  SELECT id,fulfillment_id,operation,target_card_id,product_code,amount,fee,idempotency_key,
+	    request_fingerprint,request_body_encrypted,state,provider_resource_id,created_at,submitted_at,resolved_at
+	  FROM funding_intents WHERE fulfillment_id=?`, fulfillmentID).Scan(
+		&intent.ID, &intent.FulfillmentID, &intent.Operation, &intent.TargetCardID, &intent.ProductCode,
+		&amount, &fee, &intent.IdempotencyKey, &intent.RequestFingerprint, &intent.RequestBodyEncrypted,
+		&intent.State, &intent.ProviderResourceID, &intent.CreatedAt, &intent.SubmittedAt, &intent.ResolvedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	intent.ProviderKey = provider.CardPlatformSpaceX
+	intent.AmountCents, err = paymentExactCents(amount, true)
+	if err != nil {
+		return nil, paymentFailure("FUNDING_INTENT_STORAGE_INVALID", "stored funding amount is invalid")
+	}
+	intent.FeeCents, err = paymentExactCents(fee, false)
+	if err != nil {
+		return nil, paymentFailure("FUNDING_INTENT_STORAGE_INVALID", "stored funding fee is invalid")
 	}
 	return &intent, nil
 }
@@ -1999,7 +2166,7 @@ func (p *Processor) paymentPrepareFundingIntent(ctx context.Context, fulfillment
 			return err
 		}
 		if existing != nil {
-			if existing.Operation != request.Operation || !paymentNullableEquals(existing.TargetCardID, request.TargetCardID) ||
+			if existing.ProviderKey != reservation.ProviderKey || existing.Operation != request.Operation || !paymentNullableEquals(existing.TargetCardID, request.TargetCardID) ||
 				!paymentNullableEquals(existing.ProductCode, request.ProductCode) || existing.AmountCents != request.AmountCents ||
 				existing.FeeCents != request.FeeCents || existing.IdempotencyKey != request.IdempotencyKey ||
 				existing.RequestFingerprint != request.Fingerprint {
@@ -2021,9 +2188,9 @@ func (p *Processor) paymentPrepareFundingIntent(ctx context.Context, fulfillment
 		}
 		if _, err := tx.ExecContext(ctx, `
       INSERT INTO funding_intents (
-        id,fulfillment_id,operation,target_card_id,product_code,amount,fee,idempotency_key,
+	        id,fulfillment_id,provider_key,operation,target_card_id,product_code,amount,fee,idempotency_key,
         request_fingerprint,request_body_encrypted,state,created_at
-      ) VALUES (?,?,?,?,?,?,?,?,?,?,'prepared',?)`, id, fulfillment.ID, request.Operation, targetCardID, productCode,
+	      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,'prepared',?)`, id, fulfillment.ID, reservation.ProviderKey, request.Operation, targetCardID, productCode,
 			domain.USDFromCents(request.AmountCents), domain.USDFromCents(request.FeeCents), request.IdempotencyKey,
 			request.Fingerprint, encrypted, store.ISO(now)); err != nil {
 			return err
@@ -2232,7 +2399,7 @@ func (p *Processor) paymentValidateRecoveryCandidate(
 			return paymentRecoveryCandidate{}, paymentFailure("FUNDING_INTENT_STORAGE_INVALID", "stored recharge intent conflicts with its reservation")
 		}
 		card, err := p.paymentLoadCard(ctx, query, intent.TargetCardID.String)
-		if err != nil || card.UpstreamCardID != body.CardID {
+		if err != nil || card.ProviderKey != intent.ProviderKey || card.UpstreamCardID != body.CardID {
 			return paymentRecoveryCandidate{}, paymentFailure("FUNDING_INTENT_STORAGE_INVALID", "stored recharge target does not match its request body")
 		}
 	} else if intent.Operation == "open" {
@@ -2299,7 +2466,7 @@ func (p *Processor) paymentAcquireRecoveryCall(
 
 func paymentInvokePersistedFunding(
 	ctx context.Context,
-	client *provider.SpaceXClient,
+	client provider.CardPlatform,
 	intent paymentFundingIntent,
 	body paymentRequestBody,
 ) (*provider.OpenCardResult, error) {
@@ -2337,13 +2504,23 @@ func (p *Processor) RecoverFundingOutcome(ctx context.Context, fulfillmentID str
 	if err := p.assertWorkAllowed(ctx); err != nil {
 		return err
 	}
-	if err := p.paymentAcquireSpaceXCircuit(ctx, now); err != nil {
+	if err := p.paymentAcquirePlatformCircuit(ctx, candidate.Intent.ProviderKey, now); err != nil {
 		return err
 	}
-	client, err := p.spaceXClient(ctx)
+	client, err := p.cardPlatform(ctx, candidate.Intent.ProviderKey)
 	if err != nil {
-		p.paymentRecordSpaceXFailure(ctx, err, now)
+		p.paymentRecordPlatformFailure(ctx, candidate.Intent.ProviderKey, err, now)
 		return err
+	}
+	capabilities := client.Capabilities()
+	if candidate.Intent.Operation == "recharge" && !capabilities.RechargeIdempotent {
+		return paymentFailure("FUNDING_RECOVERY_UNSUPPORTED", "this card platform cannot safely replay recharge requests")
+	}
+	if capabilities.FundingReplayWindow > 0 {
+		submittedAt, parseErr := time.Parse(time.RFC3339Nano, candidate.Intent.SubmittedAt.String)
+		if parseErr != nil || now.Sub(submittedAt) > capabilities.FundingReplayWindow {
+			return paymentFailure("FUNDING_RECOVERY_WINDOW_EXPIRED", "card platform funding replay window has expired")
+		}
 	}
 	acquired, err := p.paymentAcquireRecoveryCall(ctx, fulfillmentID, options.AllowOrphanedSubmitted, now)
 	if err != nil {
@@ -2357,9 +2534,9 @@ func (p *Processor) RecoverFundingOutcome(ctx context.Context, fulfillmentID str
 		return err
 	}
 	if callErr != nil {
-		p.paymentRecordSpaceXFailure(ctx, callErr, now)
+		p.paymentRecordPlatformFailure(ctx, acquired.Intent.ProviderKey, callErr, now)
 	} else {
-		p.paymentRecordSpaceXSuccess(ctx, now)
+		p.paymentRecordPlatformSuccess(ctx, acquired.Intent.ProviderKey, now)
 		if openResult != nil {
 			callErr = paymentValidateOpenResult(acquired.Intent, *openResult)
 		}
@@ -2392,6 +2569,7 @@ func (p *Processor) RecoverFundingOutcome(ctx context.Context, fulfillmentID str
 		return paymentFailure("PAYMENT_STAGE_SNAPSHOT_CONFLICT", "funding recovery is missing its immutable payment-stage snapshot")
 	}
 	selection := paymentSelection{
+		ProviderKey: acquired.Intent.ProviderKey,
 		Reservation: reservation,
 		Snapshot:    snapshot,
 		Plan:        paymentFundingPlan{Operation: acquired.Intent.Operation, FeeCents: acquired.Intent.FeeCents},
@@ -2480,7 +2658,7 @@ func (p *Processor) paymentAcquireFundingCall(ctx context.Context, fulfillmentID
 				return paymentFailure("FUNDING_INTENT_STORAGE_INVALID", "stored recharge target is missing")
 			}
 			card, err := p.paymentLoadCard(ctx, tx, intent.TargetCardID.String)
-			if err != nil || card.UpstreamCardID != body.CardID {
+			if err != nil || card.ProviderKey != intent.ProviderKey || card.UpstreamCardID != body.CardID {
 				return paymentFailure("FUNDING_INTENT_STORAGE_INVALID", "stored recharge target does not match its body")
 			}
 		} else if !intent.ProductCode.Valid || intent.ProductCode.String != body.ProductCode {
@@ -2519,7 +2697,7 @@ func paymentKnownNoWrite(err error) bool {
 		remote.ErrorCode == "SPACEXCARD_OPERATION_REJECTED"
 }
 
-func (p *Processor) paymentSubmitFundingIntent(ctx context.Context, client *provider.SpaceXClient, fulfillmentID string, gate paymentGate, now time.Time) error {
+func (p *Processor) paymentSubmitFundingIntent(ctx context.Context, client provider.CardPlatform, fulfillmentID string, gate paymentGate, now time.Time) error {
 	if err := p.paymentAssertInitialGate(ctx, fulfillmentID, gate); err != nil {
 		return err
 	}
@@ -2536,6 +2714,9 @@ func (p *Processor) paymentSubmitFundingIntent(ctx context.Context, client *prov
 		return err
 	}
 	intent := acquired.Intent
+	if intent.ProviderKey != client.Key() {
+		return paymentFailure("FUNDING_INTENT_STORAGE_INVALID", "funding intent card platform does not match its executor")
+	}
 	openResult, err := paymentInvokePersistedFunding(ctx, client, intent, acquired.Body)
 	// No result, including an explicit provider rejection, is persisted after
 	// lease loss or standby. The submitted intent is the recovery evidence.
@@ -2543,9 +2724,9 @@ func (p *Processor) paymentSubmitFundingIntent(ctx context.Context, client *prov
 		return workErr
 	}
 	if err != nil {
-		p.paymentRecordSpaceXFailure(ctx, err, now)
+		p.paymentRecordPlatformFailure(ctx, intent.ProviderKey, err, now)
 	} else {
-		p.paymentRecordSpaceXSuccess(ctx, now)
+		p.paymentRecordPlatformSuccess(ctx, intent.ProviderKey, now)
 		if openResult != nil {
 			err = paymentValidateOpenResult(intent, *openResult)
 		}
@@ -2627,25 +2808,50 @@ func (p *Processor) paymentPersistOpenedCard(ctx context.Context, tx *sql.Tx, in
 		return "", paymentFailure("OPEN_CARD_RESERVATION_MISMATCH", "open-card result differs from the persisted capacity plan")
 	}
 	var card paymentCard
-	err = tx.QueryRowContext(ctx, `
-    SELECT id,upstream_card_id,vm_card_id,product_code,upstream_status,cached_available_amount,
+	hasProvider, err := tableHasColumn(ctx, tx, "managed_cards", "provider_key")
+	if err != nil {
+		return "", err
+	}
+	if hasProvider {
+		err = tx.QueryRowContext(ctx, `
+	    SELECT id,provider_key,upstream_card_id,vm_card_id,product_code,upstream_status,cached_available_amount,
       lane,consumed_slots,capacity_state,reconciliation_state
-    FROM managed_cards WHERE upstream_card_id=?`, result.UpstreamCardID).Scan(
-		&card.ID, &card.UpstreamCardID, &card.VMCardID, &card.ProductCode, &card.UpstreamStatus,
-		&card.CachedAvailableAmount, &card.Lane, &card.ConsumedSlots, &card.CapacityState, &card.ReconciliationState,
-	)
+	    FROM managed_cards WHERE provider_key=? AND upstream_card_id=?`, intent.ProviderKey, result.UpstreamCardID).Scan(
+			&card.ID, &card.ProviderKey, &card.UpstreamCardID, &card.VMCardID, &card.ProductCode, &card.UpstreamStatus,
+			&card.CachedAvailableAmount, &card.Lane, &card.ConsumedSlots, &card.CapacityState, &card.ReconciliationState,
+		)
+	} else {
+		card.ProviderKey = provider.CardPlatformSpaceX
+		err = tx.QueryRowContext(ctx, `
+	    SELECT id,upstream_card_id,vm_card_id,product_code,upstream_status,cached_available_amount,
+	      lane,consumed_slots,capacity_state,reconciliation_state
+	    FROM managed_cards WHERE upstream_card_id=?`, result.UpstreamCardID).Scan(
+			&card.ID, &card.UpstreamCardID, &card.VMCardID, &card.ProductCode, &card.UpstreamStatus,
+			&card.CachedAvailableAmount, &card.Lane, &card.ConsumedSlots, &card.CapacityState, &card.ReconciliationState,
+		)
+	}
 	if errors.Is(err, sql.ErrNoRows) {
 		id, idErr := store.NewID("mc_")
 		if idErr != nil {
 			return "", idErr
 		}
 		at := store.ISO(now)
-		if _, err := tx.ExecContext(ctx, `
+		if hasProvider {
+			_, err = tx.ExecContext(ctx, `
       INSERT INTO managed_cards (
-        id,upstream_card_id,vm_card_id,product_code,bin,last4,upstream_status,cached_available_amount,
+	        id,provider_key,upstream_card_id,vm_card_id,product_code,bin,last4,upstream_status,cached_available_amount,
         lane,consumed_slots,capacity_state,reconciliation_state,last_balance_sync_at,created_at,updated_at
-      ) VALUES (?,?,?,?,NULL,NULL,?,?,NULL,0,'AVAILABLE','READY',?,?,?)`, id, result.UpstreamCardID,
-			strings.TrimSpace(result.VMCardID), strings.TrimSpace(result.ProductCode), "ACTIVE", result.AvailableAmount, at, at, at); err != nil {
+	      ) VALUES (?,?,?,?,?,NULL,NULL,?,?,NULL,0,'AVAILABLE','READY',?,?,?)`, id, intent.ProviderKey, result.UpstreamCardID,
+				strings.TrimSpace(result.VMCardID), strings.TrimSpace(result.ProductCode), "ACTIVE", result.AvailableAmount, at, at, at)
+		} else {
+			_, err = tx.ExecContext(ctx, `
+	      INSERT INTO managed_cards (
+	        id,upstream_card_id,vm_card_id,product_code,bin,last4,upstream_status,cached_available_amount,
+	        lane,consumed_slots,capacity_state,reconciliation_state,last_balance_sync_at,created_at,updated_at
+	      ) VALUES (?,?,?,?,NULL,NULL,?,?,NULL,0,'AVAILABLE','READY',?,?,?)`, id, result.UpstreamCardID,
+				strings.TrimSpace(result.VMCardID), strings.TrimSpace(result.ProductCode), "ACTIVE", result.AvailableAmount, at, at, at)
+		}
+		if err != nil {
 			return "", err
 		}
 		card, err = p.paymentLoadCard(ctx, tx, id)

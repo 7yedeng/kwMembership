@@ -14,13 +14,17 @@ import (
 	"kwmembership/internal/store"
 )
 
-const checkoutRetryDelay = 5 * time.Minute
+const (
+	checkoutRetryDelay                 = 5 * time.Minute
+	interactivePreflightAdapterVersion = "go-interactive-login-v0"
+)
 
 type checkoutStage struct {
 	ID                string
 	StageKey          string
 	State             string
 	CardID            sql.NullString
+	ProviderKey       string
 	UpstreamCardID    sql.NullInt64
 	AttemptNo         sql.NullInt64
 	AdapterVersion    sql.NullString
@@ -44,7 +48,8 @@ func (p *Processor) tickCheckout(ctx context.Context) (bool, error) {
 	if err != nil || !found {
 		return false, err
 	}
-	if fulfillment.State == "CHECKOUT_PREFLIGHT_READY" {
+	if fulfillment.State == "CHECKOUT_PREFLIGHT_READY" || fulfillment.State == "CHECKOUT_CHALLENGE_WAIT" ||
+		fulfillment.State == "CHECKOUT_LOGIN_READY" || fulfillment.State == "CHECKOUT_LOGIN_WAIT" {
 		return true, p.checkoutPreflight(ctx, fulfillment, now)
 	}
 	execution, ready, err := p.checkoutPrepareExecution(ctx, fulfillment, now)
@@ -58,7 +63,8 @@ func (p *Processor) checkoutDue(ctx context.Context, now time.Time) (Fulfillment
 	item, err := scanFulfillment(p.store.DB().QueryRowContext(ctx, `SELECT `+fulfillmentColumns+`
     FROM membership_fulfillments
     WHERE state IN (
-      'CHECKOUT_PREFLIGHT_READY','CHECKOUT_EXECUTION_WAIT','CHECKOUT_PRE_SUBMIT_FAILED',
+      'CHECKOUT_PREFLIGHT_READY','CHECKOUT_CHALLENGE_WAIT','CHECKOUT_LOGIN_READY','CHECKOUT_LOGIN_WAIT',
+	  'CHECKOUT_EXECUTION_WAIT','CHECKOUT_PRE_SUBMIT_FAILED',
       'PLUS_CONFIRMED','PLUS_APPROVAL_WAIT','UPGRADE_APPROVAL_WAIT'
     )
       AND (retry_at IS NULL OR retry_at<=?)
@@ -71,45 +77,99 @@ func (p *Processor) checkoutDue(ctx context.Context, now time.Time) (Fulfillment
 }
 
 func (p *Processor) checkoutPreflight(ctx context.Context, fulfillment Fulfillment, now time.Time) error {
-	session, token, err := p.checkoutSessionAndToken(ctx, fulfillment.ID)
-	if err != nil {
-		return p.checkoutRecordPreflightFailure(ctx, fulfillment, err, now)
-	}
+	interactive := fulfillment.State == "CHECKOUT_LOGIN_READY" || fulfillment.State == "CHECKOUT_LOGIN_WAIT"
 	contract, err := p.checkoutActiveContract(ctx, "plus")
 	if err != nil {
 		return p.checkoutRecordPreflightFailure(ctx, fulfillment, err, now)
 	}
-	prepared, err := p.gpt.PrepareCheckout(ctx, session, token)
-	if guardErr := p.assertWorkAllowed(ctx); guardErr != nil {
-		return guardErr
-	}
-	if err != nil {
-		return p.checkoutRecordPreflightFailure(ctx, fulfillment, err, now)
-	}
-	result, err := p.executor.Execute(ctx, checkout.Request{
+	request := checkout.Request{
 		Mode: checkout.ModePreflight, Stage: "plus", TargetTier: fulfillment.TargetTier,
-		CheckoutURL: prepared.URL, Cookies: prepared.Cookies, PriceContract: contract,
-	})
+		PriceContract: contract,
+	}
+	if interactive {
+		expectedEmail, err := p.checkoutSessionEmail(ctx, fulfillment.ID)
+		if err != nil {
+			return p.checkoutRecordPreflightFailure(ctx, fulfillment, err, now)
+		}
+		request.Mode = checkout.ModeInteractivePreflight
+		request.ExpectedEmail = expectedEmail
+		request.OnHandoff = func(ctx context.Context, handoff checkout.Handoff) error {
+			reason := "INTERACTIVE_LOGIN_REQUIRED"
+			if handoff.Type == "challenge-cloudflare" || handoff.Type == "cloudflare" {
+				reason = "CLOUDFLARE_CHALLENGE_REQUIRED"
+			}
+			return p.checkoutInterventionTransition(ctx, fulfillment.ID, "CHECKOUT_LOGIN_WAIT", reason, "plus", p.now().UTC())
+		}
+	} else {
+		session, err := p.rcLoadSession(ctx, fulfillment.ID)
+		if err != nil {
+			return p.checkoutRecordPreflightFailure(ctx, fulfillment, err, now)
+		}
+		browserSession, err := provider.BrowserSessionFromJSON(session, now)
+		if err != nil {
+			return p.checkoutRecordPreflightFailure(ctx, fulfillment, err, now)
+		}
+		request.Mode = checkout.ModeSessionPreflight
+		request.ExpectedEmail = browserSession.Email
+		request.Cookies = browserSession.Cookies
+		request.Session = session
+		request.Binding = checkout.ExecutionBinding{
+			FulfillmentID: fulfillment.ID, FulfillmentRevision: fulfillment.StateRevision,
+			AttemptNo: fulfillment.StateRevision, PriorityClass: "normal", AdapterVersion: paymentAdapterVersion,
+		}
+	}
+	if p.config.VisibleBrowser && !interactive {
+		request.OnHandoff = func(ctx context.Context, challenge checkout.Handoff) error {
+			reason := "SECURITY_CHALLENGE_REQUIRED"
+			if challenge.Type == "cloudflare" || challenge.Type == "challenge-cloudflare" {
+				reason = "CLOUDFLARE_CHALLENGE_REQUIRED"
+			}
+			return p.checkoutInterventionTransition(ctx, fulfillment.ID, "CHECKOUT_CHALLENGE_WAIT", reason, "plus", p.now().UTC())
+		}
+	}
+	result, err := p.executor.Execute(ctx, request)
 	if guardErr := p.assertWorkAllowed(ctx); guardErr != nil {
 		return guardErr
 	}
+	finishedAt := p.now().UTC()
+	if errorCode(err) == "EXECUTOR_PENDING" {
+		return nil
+	}
 	if err != nil {
-		return p.checkoutRecordPreflightFailure(ctx, fulfillment, err, now)
+		return p.checkoutRecordPreflightFailure(ctx, fulfillment, err, finishedAt)
 	}
 	if result.Challenge {
 		return p.checkoutRecordPreflightFailure(ctx, fulfillment,
-			coded("SECURITY_CHALLENGE_REQUIRED", "checkout preflight requires a security challenge"), now)
+			coded("SECURITY_CHALLENGE_REQUIRED", "checkout preflight requires a security challenge"), finishedAt)
 	}
-	if err := p.checkoutPersistPreflight(ctx, fulfillment, contract, result.Page, now); err != nil {
+	current, err := loadFulfillment(ctx, p.store.DB(), fulfillment.ID)
+	if err != nil {
 		return err
 	}
-	_, err = p.transition(ctx, fulfillment.ID, "FUNDING_READY", now, transitionOptions{
-		CurrentStage: pointer("plus"), ExpectedRevision: &fulfillment.StateRevision,
+	validCurrent := current.State == "CHECKOUT_PREFLIGHT_READY" || current.State == "CHECKOUT_CHALLENGE_WAIT"
+	if interactive {
+		validCurrent = current.State == "CHECKOUT_LOGIN_READY" || current.State == "CHECKOUT_LOGIN_WAIT"
+	}
+	if !validCurrent {
+		return coded("MEMBERSHIP_REVISION_CONFLICT", "membership state changed during checkout preflight")
+	}
+	completedAt := finishedAt
+	adapterVersion := paymentAdapterVersion
+	nextState := "FUNDING_READY"
+	if interactive {
+		adapterVersion = interactivePreflightAdapterVersion
+		nextState = "CHECKOUT_LOGIN_PREFLIGHT_PASSED"
+	}
+	if err := p.checkoutPersistPreflight(ctx, current, contract, result.Page, adapterVersion, completedAt); err != nil {
+		return err
+	}
+	_, err = p.transition(ctx, current.ID, nextState, completedAt, transitionOptions{
+		CurrentStage: pointer("plus"), ExpectedRevision: &current.StateRevision,
 	})
 	return err
 }
 
-func (p *Processor) checkoutPersistPreflight(ctx context.Context, fulfillment Fulfillment, contract checkout.PriceContract, page checkout.PageFacts, now time.Time) error {
+func (p *Processor) checkoutPersistPreflight(ctx context.Context, fulfillment Fulfillment, contract checkout.PriceContract, page checkout.PageFacts, adapterVersion string, now time.Time) error {
 	var siteID, productID string
 	if err := p.store.DB().QueryRowContext(ctx, `SELECT o.site_id,o.product_id
     FROM membership_fulfillments f JOIN redeem_orders o ON o.id=f.order_id WHERE f.id=?`, fulfillment.ID).
@@ -125,23 +185,30 @@ func (p *Processor) checkoutPersistPreflight(ctx context.Context, fulfillment Fu
 	_, err = p.fencedExec(ctx, `INSERT INTO checkout_validation_runs
     (id,order_id,site_id,product_id,tier,adapter_version,price_contract_id,status,
      sanitized_result,started_at,completed_at,created_by)
-	VALUES (?,?,?,?,?,'go-headless-v1',?,'passed',?,?,?,'go')`, id, fulfillment.OrderID,
-		siteID, productID, "plus", contract.ID, string(sanitized), at, at)
+	VALUES (?,?,?,?,?,?,?,'passed',?,?,?,'go')`, id, fulfillment.OrderID,
+		siteID, productID, "plus", adapterVersion, contract.ID, string(sanitized), at, at)
 	return err
 }
 
 func (p *Processor) checkoutRecordPreflightFailure(ctx context.Context, fulfillment Fulfillment, cause error, now time.Time) error {
 	code := errorCode(cause)
-	if code == "SESSION_INVALID" || code == "EXPECTED_IDENTITY_MISSING" || code == "CONVERTER_IDENTITY_MISMATCH" {
-		retryAt := store.ISO(now.Add(checkoutRetryDelay))
-		if _, err := p.transition(ctx, fulfillment.ID, "MEMBERSHIP_CONTRACT_UNKNOWN", now, transitionOptions{
-			CurrentStage: pointer("eligibility"), FailureCode: pointer(code), RetryAt: &retryAt,
+	if isSessionFailureCode(code) {
+		if err := p.handleSessionFailure(ctx, fulfillment.ID, code, "eligibility", now); err != nil {
+			return err
+		}
+		return cause
+	}
+	if code == "CHATGPT_ACCOUNT_ALREADY_SUBSCRIBED" {
+		if _, err := p.transition(ctx, fulfillment.ID, "ACCOUNT_ALREADY_SUBSCRIBED", now, transitionOptions{
+			CurrentStage: pointer("eligibility"), FailureCode: pointer(code),
 		}); err != nil {
 			return err
 		}
 		return cause
 	}
-	if code == "CHECKOUT_UI_UNSUPPORTED" || code == "SECURITY_CHALLENGE_REQUIRED" {
+	if code == "CHECKOUT_UI_UNSUPPORTED" || code == "SECURITY_CHALLENGE_REQUIRED" || code == "SECURITY_CHALLENGE_TIMEOUT" ||
+		sessionCheckoutIntervention(code) ||
+		strings.HasPrefix(code, "INTERACTIVE_LOGIN_") {
 		if err := p.checkoutInterventionTransition(ctx, fulfillment.ID, "CHECKOUT_UI_UNSUPPORTED", code, "plus", now); err != nil {
 			return err
 		}
@@ -154,6 +221,22 @@ func (p *Processor) checkoutRecordPreflightFailure(ctx context.Context, fulfillm
 		return err
 	}
 	return cause
+}
+
+func (p *Processor) checkoutSessionEmail(ctx context.Context, fulfillmentID string) (string, error) {
+	session, err := p.rcLoadSession(ctx, fulfillmentID)
+	if err != nil {
+		return "", err
+	}
+	var identity map[string]any
+	if json.Unmarshal(session, &identity) != nil {
+		return "", coded("SESSION_INVALID", "session is invalid")
+	}
+	email := strings.ToLower(strings.TrimSpace(sessionEmail(identity)))
+	if !validEmail(email) {
+		return "", coded("EXPECTED_IDENTITY_MISSING", "session identity is missing")
+	}
+	return email, nil
 }
 
 func (p *Processor) checkoutPrepareExecution(ctx context.Context, fulfillment Fulfillment, now time.Time) (checkoutExecution, bool, error) {
@@ -239,7 +322,7 @@ func (p *Processor) checkoutPrepareExecution(ctx context.Context, fulfillment Fu
           SET state='checkout_ready',attempt_no=?,adapter_version=?,adapter_path=?,
               page_fingerprint=NULL,page_permit_kind=NULL,page_control_id=NULL,page_ready_at=NULL,
               page_facts_json=NULL,updated_at=? WHERE id=?`, attemptNo, paymentAdapterVersion,
-				"go-headless-v1", store.ISO(now), stage.ID); err != nil {
+				paymentAdapterVersion, store.ISO(now), stage.ID); err != nil {
 				return err
 			}
 			stage.AttemptNo = sql.NullInt64{Int64: attemptNo, Valid: true}
@@ -261,17 +344,36 @@ func (p *Processor) checkoutPrepareExecution(ctx context.Context, fulfillment Fu
 
 func loadCheckoutStage(ctx context.Context, query store.Execer, fulfillmentID, stageKey string) (checkoutStage, error) {
 	var stage checkoutStage
-	err := query.QueryRowContext(ctx, `SELECT stage.id,stage.stage_key,stage.state,stage.card_id,card.upstream_card_id,
+	hasProvider, err := tableHasColumn(ctx, query, "managed_cards", "provider_key")
+	if err != nil {
+		return checkoutStage{}, err
+	}
+	if hasProvider {
+		err = query.QueryRowContext(ctx, `SELECT stage.id,stage.stage_key,stage.state,stage.card_id,card.provider_key,card.upstream_card_id,
       stage.attempt_no,stage.adapter_version,contract.id,contract.version,contract.tier,contract.currency,
       contract.min_amount,contract.max_amount
     FROM membership_payment_stages stage
     JOIN managed_cards card ON card.id=stage.card_id
     JOIN checkout_price_contracts contract ON contract.id=stage.price_contract_id
     WHERE stage.fulfillment_id=? AND stage.stage_key=?`, fulfillmentID, stageKey).Scan(
-		&stage.ID, &stage.StageKey, &stage.State, &stage.CardID, &stage.UpstreamCardID,
-		&stage.AttemptNo, &stage.AdapterVersion, &stage.PriceContractID, &stage.PriceContractVer,
-		&stage.PriceContractTier, &stage.PriceContractCurr, &stage.PriceContractMin, &stage.PriceContractMax,
-	)
+			&stage.ID, &stage.StageKey, &stage.State, &stage.CardID, &stage.ProviderKey, &stage.UpstreamCardID,
+			&stage.AttemptNo, &stage.AdapterVersion, &stage.PriceContractID, &stage.PriceContractVer,
+			&stage.PriceContractTier, &stage.PriceContractCurr, &stage.PriceContractMin, &stage.PriceContractMax,
+		)
+	} else {
+		stage.ProviderKey = provider.CardPlatformSpaceX
+		err = query.QueryRowContext(ctx, `SELECT stage.id,stage.stage_key,stage.state,stage.card_id,card.upstream_card_id,
+	      stage.attempt_no,stage.adapter_version,contract.id,contract.version,contract.tier,contract.currency,
+	      contract.min_amount,contract.max_amount
+	    FROM membership_payment_stages stage
+	    JOIN managed_cards card ON card.id=stage.card_id
+	    JOIN checkout_price_contracts contract ON contract.id=stage.price_contract_id
+	    WHERE stage.fulfillment_id=? AND stage.stage_key=?`, fulfillmentID, stageKey).Scan(
+			&stage.ID, &stage.StageKey, &stage.State, &stage.CardID, &stage.UpstreamCardID,
+			&stage.AttemptNo, &stage.AdapterVersion, &stage.PriceContractID, &stage.PriceContractVer,
+			&stage.PriceContractTier, &stage.PriceContractCurr, &stage.PriceContractMin, &stage.PriceContractMax,
+		)
+	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return checkoutStage{}, coded("PAYMENT_STAGE_EVIDENCE_INCOMPLETE", "checkout payment stage is missing")
 	}
@@ -285,11 +387,15 @@ func loadCheckoutStage(ctx context.Context, query store.Execer, fulfillmentID, s
 }
 
 func (p *Processor) checkoutExecute(ctx context.Context, execution checkoutExecution, now time.Time) error {
-	session, token, err := p.checkoutSessionAndToken(ctx, execution.Fulfillment.ID)
+	session, err := p.rcLoadSession(ctx, execution.Fulfillment.ID)
 	if err != nil {
 		return p.checkoutRecordExecutionFailure(ctx, execution, err, now)
 	}
-	client, err := p.spaceXClient(ctx)
+	browserSession, err := provider.BrowserSessionFromJSON(session, now)
+	if err != nil {
+		return p.checkoutRecordExecutionFailure(ctx, execution, err, now)
+	}
+	client, err := p.cardPlatform(ctx, execution.Stage.ProviderKey)
 	if err != nil {
 		return p.checkoutRecordExecutionFailure(ctx, execution, err, now)
 	}
@@ -307,24 +413,11 @@ func (p *Processor) checkoutExecute(ctx context.Context, execution checkoutExecu
 	if err != nil {
 		return p.checkoutRecordExecutionFailure(ctx, execution, err, now)
 	}
-	mode := checkout.ModeCheckout
-	prepared := provider.CheckoutSession{}
-	if execution.Stage.StageKey == "plus" {
-		prepared, err = p.gpt.PrepareCheckout(ctx, session, token)
-	} else {
-		mode = checkout.ModeUpgrade
-		prepared.Cookies, err = p.gpt.SessionCookies(ctx, session, token)
-	}
-	if guardErr := p.assertWorkAllowed(ctx); guardErr != nil {
-		return guardErr
-	}
-	if err != nil {
-		return p.checkoutRecordExecutionFailure(ctx, execution, err, now)
-	}
 	guard := &checkoutGuard{processor: p, execution: execution, client: client}
 	request := checkout.Request{
-		Mode: mode, Stage: execution.Stage.StageKey, TargetTier: execution.Fulfillment.TargetTier,
-		CheckoutURL: prepared.URL, PlanURL: checkout.PlanManagementURL, Cookies: prepared.Cookies,
+		Mode: checkout.ModeSessionCheckout, Stage: execution.Stage.StageKey, TargetTier: execution.Fulfillment.TargetTier,
+		Cookies: browserSession.Cookies, ExpectedEmail: browserSession.Email,
+		Session: session,
 		PriceContract: checkout.PriceContract{
 			ID: execution.Stage.PriceContractID, Version: execution.Stage.PriceContractVer,
 			Tier: execution.Stage.PriceContractTier, Currency: execution.Stage.PriceContractCurr,
@@ -335,11 +428,21 @@ func (p *Processor) checkoutExecute(ctx context.Context, execution checkoutExecu
 			Billing: checkout.BillingAddress{Name: billing.Name, Line1: billing.Line1, City: billing.City, State: billing.State, PostalCode: billing.PostalCode, Country: billing.Country},
 		},
 		Guard: guard,
+		Binding: checkout.ExecutionBinding{
+			FulfillmentID: execution.Fulfillment.ID, FulfillmentRevision: execution.Fulfillment.StateRevision,
+			AttemptNo: execution.AttemptNo, PriorityClass: checkoutPriority(execution), AdapterVersion: paymentAdapterVersion,
+		},
+	}
+	if execution.Stage.StageKey == "upgrade" {
+		request.PlanURL = checkout.PlanManagementURL
 	}
 	result, err := p.executor.Execute(ctx, request)
 	request.Material = nil
 	if guardErr := p.assertWorkAllowed(ctx); guardErr != nil {
 		return guardErr
+	}
+	if errorCode(err) == "EXECUTOR_PENDING" {
+		return nil
 	}
 	if err != nil {
 		var browserError *checkout.Error
@@ -361,24 +464,14 @@ func (p *Processor) checkoutExecute(ctx context.Context, execution checkoutExecu
 	return nil
 }
 
-func (p *Processor) checkoutSessionAndToken(ctx context.Context, fulfillmentID string) (json.RawMessage, string, error) {
-	session, err := p.rcLoadSession(ctx, fulfillmentID)
-	if err != nil {
-		return nil, "", err
+func checkoutPriority(execution checkoutExecution) string {
+	if execution.Stage.StageKey == "upgrade" {
+		return "upgrade"
 	}
-	var encrypted sql.NullString
-	if err := p.store.DB().QueryRowContext(ctx, `SELECT spacexcard_api_token_encrypted
-    FROM extension_delivery_settings WHERE id='default'`).Scan(&encrypted); err != nil {
-		return nil, "", err
+	if execution.Fulfillment.MoneyBoundaryAt.Valid {
+		return "recovery"
 	}
-	if !encrypted.Valid || encrypted.String == "" {
-		return nil, "", coded("CHECKOUT_BROKER_NOT_CONFIGURED", "checkout broker token is not configured")
-	}
-	token, err := p.decrypter.Decrypt(encrypted.String)
-	if err != nil || strings.TrimSpace(token) == "" {
-		return nil, "", coded("CHECKOUT_BROKER_NOT_CONFIGURED", "checkout broker token is invalid")
-	}
-	return session, strings.TrimSpace(token), nil
+	return "normal"
 }
 
 func (p *Processor) checkoutActiveContract(ctx context.Context, tier string) (checkout.PriceContract, error) {
@@ -395,7 +488,13 @@ func (p *Processor) checkoutActiveContract(ctx context.Context, tier string) (ch
 
 func (p *Processor) checkoutRecordExecutionFailure(ctx context.Context, execution checkoutExecution, cause error, now time.Time) error {
 	code := errorCode(cause)
-	if code == "CHECKOUT_UI_UNSUPPORTED" || code == "SECURITY_CHALLENGE_REQUIRED" {
+	if isSessionFailureCode(code) {
+		if err := p.handleSessionFailure(ctx, execution.Fulfillment.ID, code, execution.Stage.StageKey, now); err != nil {
+			return err
+		}
+		return cause
+	}
+	if code == "CHECKOUT_UI_UNSUPPORTED" || code == "SECURITY_CHALLENGE_REQUIRED" || sessionCheckoutIntervention(code) {
 		if err := p.checkoutInterventionTransition(ctx, execution.Fulfillment.ID, "CHECKOUT_UI_UNSUPPORTED", code, execution.Stage.StageKey, now); err != nil {
 			return err
 		}
@@ -416,6 +515,19 @@ func (p *Processor) checkoutRecordExecutionFailure(ctx context.Context, executio
 	}
 	retryAt := store.ISO(now.Add(checkoutRetryDelay))
 	err := p.withFencedImmediate(ctx, func(tx *sql.Tx) error {
+		current, err := loadFulfillment(ctx, tx, execution.Fulfillment.ID)
+		if err != nil {
+			return err
+		}
+		if current.MoneyBoundaryAt.Valid {
+			updated, err := transitionWithTx(ctx, tx, current.ID, "EXECUTOR_OUTCOME_UNCERTAIN", now, transitionOptions{
+				CurrentStage: pointer(execution.Stage.StageKey), FailureCode: pointer(code),
+			})
+			if err != nil {
+				return err
+			}
+			return insertCheckoutIntervention(ctx, tx, updated, code, now)
+		}
 		if _, err := tx.ExecContext(ctx, `UPDATE membership_payment_stages
       SET state='checkout_pending',updated_at=? WHERE id=? AND state IN ('checkout_ready','progression_permitted')`,
 			store.ISO(now), execution.Stage.ID); err != nil {
@@ -427,7 +539,7 @@ func (p *Processor) checkoutRecordExecutionFailure(ctx context.Context, executio
 			execution.Fulfillment.ID, execution.Stage.StageKey, execution.AttemptNo); err != nil {
 			return err
 		}
-		_, err := transitionWithTx(ctx, tx, execution.Fulfillment.ID, "CHECKOUT_PRE_SUBMIT_FAILED", now, transitionOptions{
+		_, err = transitionWithTx(ctx, tx, execution.Fulfillment.ID, "CHECKOUT_PRE_SUBMIT_FAILED", now, transitionOptions{
 			CurrentStage: pointer(execution.Stage.StageKey), FailureCode: pointer(code), RetryAt: &retryAt,
 		})
 		return err
@@ -436,6 +548,17 @@ func (p *Processor) checkoutRecordExecutionFailure(ctx context.Context, executio
 		return err
 	}
 	return cause
+}
+
+func sessionCheckoutIntervention(code string) bool {
+	switch code {
+	case "SESSION_COOKIE_MISSING", "CHATGPT_SESSION_UNAUTHORIZED", "CHATGPT_SESSION_IDENTITY_MISMATCH",
+		"CHECKOUT_ENTRY_UNAVAILABLE", "CHECKOUT_API_AUTH_FAILED",
+		"CHECKOUT_API_CONTRACT_DRIFT", "CHECKOUT_CONTEXT_INVALID":
+		return true
+	default:
+		return false
+	}
 }
 
 func (p *Processor) checkoutInterventionTransition(ctx context.Context, fulfillmentID, state, reason, stage string, now time.Time) error {
@@ -464,7 +587,7 @@ func insertCheckoutIntervention(ctx context.Context, tx *sql.Tx, fulfillment Ful
 type checkoutGuard struct {
 	processor *Processor
 	execution checkoutExecution
-	client    *provider.SpaceXClient
+	client    provider.CardPlatform
 }
 
 func (g *checkoutGuard) BeforeAction(ctx context.Context, action checkout.Action) (checkout.Permit, error) {
@@ -483,7 +606,7 @@ func (g *checkoutGuard) BeforeAction(ctx context.Context, action checkout.Action
 	seen := map[string]bool{}
 	for _, transaction := range transactions {
 		if !rcSafeID(transaction.AuthID) || seen[transaction.AuthID] {
-			return checkout.Permit{}, coded("SPACEXCARD_CONTRACT_DRIFT", "transaction authorization identity is invalid")
+			return checkout.Permit{}, coded("CARD_PLATFORM_CONTRACT_DRIFT", "transaction authorization identity is invalid")
 		}
 		seen[transaction.AuthID] = true
 		authIDs = append(authIDs, transaction.AuthID)
@@ -549,7 +672,7 @@ func (g *checkoutGuard) BeforeAction(ctx context.Context, action checkout.Action
       (id,fulfillment_id,stage_key,attempt_no,action_type,sequence_no,installation_id,
        browser_lease_epoch,adapter_version,price_contract_id,control_id,page_fingerprint,state,
        issued_at,expires_at,authorization_mode,authorization_id)
-      VALUES (?,?,?,?,?,?,'go-headless',?,?,?,?,?,'issued',?,?,?,?)`, permitID, fulfillment.ID,
+      VALUES (?,?,?,?,?,?,'python-executor',?,?,?,?,?,'issued',?,?,?,?)`, permitID, fulfillment.ID,
 			action.Stage, g.execution.AttemptNo, string(action.Kind), sequence, p.lease.Epoch,
 			paymentAdapterVersion, stage.PriceContractID, action.ControlID, action.PageFingerprint,
 			at, expiresAt, mode, authorizationID); err != nil {
@@ -683,10 +806,7 @@ func (g *checkoutGuard) AfterAction(ctx context.Context, action checkout.Action,
 		return checkout.ActionOutcome{}, coded("ACTION_PERMIT_BINDING_MISMATCH", "checkout action permit is missing")
 	}
 	if action.Kind == checkout.ActionSubmit {
-		err := p.withFencedImmediate(ctx, func(tx *sql.Tx) error {
-			return checkoutActivatePermit(ctx, tx, g.execution, action, permit, nowUTC(p), nil)
-		})
-		return checkout.ActionOutcome{Continue: false}, err
+		return checkout.ActionOutcome{Continue: false}, nil
 	}
 	transactions, err := p.loadAllTransactions(ctx, g.client, g.execution.Stage.UpstreamCardID.Int64)
 	if err != nil {
@@ -701,7 +821,7 @@ func (g *checkoutGuard) AfterAction(ctx context.Context, action checkout.Action,
 	}
 	outcome := checkout.ActionOutcome{}
 	err = p.withFencedImmediate(ctx, func(tx *sql.Tx) error {
-		return checkoutActivatePermit(ctx, tx, g.execution, action, permit, nowUTC(p), func(before map[string]bool) error {
+		return checkoutReportProgression(ctx, tx, g.execution, action, permit, nowUTC(p), func(before map[string]bool) error {
 			newAuthorization := false
 			for _, authID := range current {
 				if !before[authID] {
@@ -743,8 +863,14 @@ func (g *checkoutGuard) AfterAction(ctx context.Context, action checkout.Action,
 	return outcome, err
 }
 
+func (g *checkoutGuard) ActivateAction(ctx context.Context, action checkout.Action, permit checkout.Permit) error {
+	return g.processor.withFencedImmediate(ctx, func(tx *sql.Tx) error {
+		return checkoutActivatePermit(ctx, tx, g.execution, action, permit, nowUTC(g.processor))
+	})
+}
+
 func checkoutActivatePermit(ctx context.Context, tx *sql.Tx, execution checkoutExecution, action checkout.Action,
-	permit checkout.Permit, now time.Time, progression func(map[string]bool) error) error {
+	permit checkout.Permit, now time.Time) error {
 	var state, actionType, stageKey string
 	var attemptNo int64
 	err := tx.QueryRowContext(ctx, `SELECT state,action_type,stage_key,attempt_no FROM membership_action_permits WHERE id=?`, permit.ID).
@@ -755,6 +881,35 @@ func checkoutActivatePermit(ctx context.Context, tx *sql.Tx, execution checkoutE
 	at := store.ISO(now)
 	if _, err := tx.ExecContext(ctx, `UPDATE membership_action_permits SET state='activated',activated_at=? WHERE id=? AND state='issued'`, at, permit.ID); err != nil {
 		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE membership_fulfillments
+    SET money_boundary_at=COALESCE(money_boundary_at,?),updated_at=? WHERE id=?`, at, at, execution.Fulfillment.ID); err != nil {
+		return err
+	}
+	if action.Kind == checkout.ActionProgression {
+		return nil
+	}
+	next := "PLUS_RECONCILING"
+	if action.Stage == "upgrade" {
+		next = "UPGRADE_RECONCILING"
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE membership_payment_stages
+    SET state='reconciling',submit_reported_at=?,updated_at=? WHERE id=?`, at, at, execution.Stage.ID); err != nil {
+		return err
+	}
+	_, err = transitionWithTx(ctx, tx, execution.Fulfillment.ID, next, now, transitionOptions{CurrentStage: pointer(action.Stage)})
+	return err
+}
+
+func checkoutReportProgression(ctx context.Context, tx *sql.Tx, execution checkoutExecution, action checkout.Action,
+	permit checkout.Permit, now time.Time, progression func(map[string]bool) error) error {
+	var state, actionType, stageKey string
+	var attemptNo int64
+	err := tx.QueryRowContext(ctx, `SELECT state,action_type,stage_key,attempt_no FROM membership_action_permits WHERE id=?`, permit.ID).
+		Scan(&state, &actionType, &stageKey, &attemptNo)
+	if err != nil || state != "activated" || actionType != string(checkout.ActionProgression) ||
+		stageKey != action.Stage || attemptNo != execution.AttemptNo {
+		return coded("ACTION_PERMIT_BINDING_MISMATCH", "checkout progression permit binding changed")
 	}
 	if action.Kind == checkout.ActionProgression {
 		before := map[string]bool{}
@@ -775,16 +930,7 @@ func checkoutActivatePermit(ctx context.Context, tx *sql.Tx, execution checkoutE
 		}
 		return progression(before)
 	}
-	next := "PLUS_RECONCILING"
-	if action.Stage == "upgrade" {
-		next = "UPGRADE_RECONCILING"
-	}
-	if _, err := tx.ExecContext(ctx, `UPDATE membership_payment_stages
-    SET state='reconciling',submit_reported_at=?,updated_at=? WHERE id=?`, at, at, execution.Stage.ID); err != nil {
-		return err
-	}
-	_, err = transitionWithTx(ctx, tx, execution.Fulfillment.ID, next, now, transitionOptions{CurrentStage: pointer(action.Stage)})
-	return err
+	return coded("CHECKOUT_ACTION_INVALID", "checkout progression action is invalid")
 }
 
 func (p *Processor) checkoutMarkUncertain(ctx context.Context, execution checkoutExecution, browserError *checkout.Error, now time.Time) error {

@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"sync"
@@ -15,6 +17,7 @@ import (
 
 	"kwmembership/internal/checkout"
 	"kwmembership/internal/config"
+	executorbridge "kwmembership/internal/executor"
 	"kwmembership/internal/processor"
 	"kwmembership/internal/secure"
 	"kwmembership/internal/store"
@@ -126,7 +129,10 @@ func checkConfiguration() error {
 	if err := repository.VerifySharedSchema(ctx); err != nil {
 		return err
 	}
-	return checkout.VerifyChrome(ctx, cfg.ChromePath)
+	if cfg.CheckoutExecutor == "legacy-go" {
+		return checkout.VerifyChrome(ctx, cfg.ChromePath, cfg.ChromeProxyServer, cfg.VisibleBrowser)
+	}
+	return nil
 }
 
 func run(ctx context.Context) (runErr error) {
@@ -162,8 +168,30 @@ func run(ctx context.Context) (runErr error) {
 	}
 	log.Printf("[kwMembership worker] lease acquired at epoch %d (version %s)", lease.Epoch, version)
 
-	runner := processor.New(cfg, repository, lease, decrypter)
-	runErr = runLoop(ctx, cfg, repository, lease, runner)
+	var paymentExecutor checkout.Executor
+	var executorServer *http.Server
+	var executorListener net.Listener
+	if cfg.CheckoutExecutor == "python" {
+		bridge, err := executorbridge.NewBridge(repository.DB(), cfg.ExecutorSecret)
+		if err != nil {
+			return fmt.Errorf("initialize Python executor bridge: %w", err)
+		}
+		executorListener, err = net.Listen("tcp", cfg.ExecutorListenAddress)
+		if err != nil {
+			return fmt.Errorf("listen for Python executor: %w", err)
+		}
+		executorServer = &http.Server{
+			Handler: bridge.Handler(), ReadHeaderTimeout: 5 * time.Second,
+			ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 30 * time.Second,
+		}
+		paymentExecutor = bridge
+		log.Printf("[kwMembership worker] Python executor bridge listening on %s", cfg.ExecutorListenAddress)
+	} else {
+		paymentExecutor = checkout.NewChromeExecutor(cfg.ChromePath, cfg.ChromeProxyServer, cfg.VisibleBrowser, cfg.BrowserTimeout, cfg.HumanChallengeTimeout)
+	}
+
+	runner := processor.NewWithExecutor(cfg, repository, lease, decrypter, paymentExecutor)
+	runErr = runLoopWithExecutorServer(ctx, cfg, repository, lease, runner, executorServer, executorListener)
 
 	releaseCtx, cancelRelease := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancelRelease()
@@ -173,6 +201,56 @@ func run(ctx context.Context) (runErr error) {
 		log.Printf("[kwMembership worker] lease released")
 	}
 	return runErr
+}
+
+func runLoopWithExecutorServer(
+	ctx context.Context,
+	cfg config.Config,
+	repository *store.Store,
+	lease store.Lease,
+	runner *processor.Processor,
+	server *http.Server,
+	listener net.Listener,
+) error {
+	if server == nil {
+		return runLoop(ctx, cfg, repository, lease, runner)
+	}
+	serverCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	serverErrors := make(chan error, 1)
+	go func() {
+		if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			serverErrors <- err
+			cancel()
+		}
+	}()
+	loopErrors := make(chan error, 1)
+	go func() { loopErrors <- runLoop(serverCtx, cfg, repository, lease, runner) }()
+	var result error
+	loopStopped := false
+	select {
+	case err := <-serverErrors:
+		result = fmt.Errorf("Python executor bridge failed: %w", err)
+	case result = <-loopErrors:
+		loopStopped = true
+	}
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shutdownCancel()
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		result = errors.Join(result, fmt.Errorf("shutdown Python executor bridge: %w", err))
+	}
+	cancel()
+	if !loopStopped {
+		select {
+		case loopErr := <-loopErrors:
+			if result == nil {
+				result = loopErr
+			}
+		case <-time.After(5 * time.Second):
+			result = errors.Join(result, errors.New("membership run loop did not stop after executor bridge shutdown"))
+		}
+	}
+	return result
 }
 
 func runLoop(

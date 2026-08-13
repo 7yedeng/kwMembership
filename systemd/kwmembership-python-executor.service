@@ -1,0 +1,21 @@
+[Unit]
+Description=kwMembership serial Python payment executor
+Requires=kwmembership-worker.service
+After=kwmembership-worker.service
+
+[Service]
+Type=simple
+User=@@RUN_USER@@
+Group=@@RUN_USER@@
+WorkingDirectory=@@INSTALL_DIR@@
+EnvironmentFile=@@ENV_FILE@@
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=@@PYTHON_BIN@@ -m python_executor
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+
+[Install]
+WantedBy=multi-user.target

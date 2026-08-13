@@ -1,0 +1,12 @@
+[Unit]
+Description=kwMembership private X display
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/Xvfb :99 -screen 0 1280x900x24 -nolisten tcp -noreset
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

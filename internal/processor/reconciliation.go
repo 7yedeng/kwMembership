@@ -27,6 +27,7 @@ type rcPaymentStage struct {
 	ExpectedTier      string
 	AttemptNo         sql.NullInt64
 	CardID            sql.NullString
+	ProviderKey       sql.NullString
 	PriceMin          sql.NullFloat64
 	PriceMax          sql.NullFloat64
 	SubmitPermittedAt sql.NullString
@@ -83,7 +84,8 @@ func (p *Processor) rcDueFulfillment(ctx context.Context, now time.Time) (Fulfil
           f.state IN (
             'PLUS_SUBMIT_PERMITTED','PLUS_RECONCILING','UPGRADE_SUBMIT_PERMITTED',
             'UPGRADE_RECONCILING','PAYMENT_OUTCOME_UNCERTAIN','PAYMENT_ACTION_REQUIRED',
-            'ACTION_REQUIRED_CONTEXT_LOST','UNEXPECTED_PREAUTH',
+			'ACTION_REQUIRED_CONTEXT_LOST','UNEXPECTED_PREAUTH',
+			'SESSION_RECOVERY_RECONCILING',
             'FINAL_TIER_CONFIRMED','RENEWAL_CANCELLING','PARTIALLY_FULFILLED'
           )
           OR (f.state='COMPLETED' AND EXISTS (
@@ -127,6 +129,8 @@ func (p *Processor) rcProcessFulfillment(ctx context.Context, fulfillment Fulfil
 	case "PLUS_SUBMIT_PERMITTED", "PLUS_RECONCILING", "UPGRADE_SUBMIT_PERMITTED",
 		"UPGRADE_RECONCILING", "PAYMENT_OUTCOME_UNCERTAIN":
 		return p.rcReconcilePayment(ctx, fulfillment, now)
+	case "SESSION_RECOVERY_RECONCILING":
+		return p.rcReconcileRecoveredSession(ctx, fulfillment, now)
 	case "UNEXPECTED_PREAUTH":
 		if err := p.rcEnsureIntervention(ctx, fulfillment, "UNEXPECTED_PREAUTH", now); err != nil {
 			return err
@@ -210,7 +214,7 @@ func (p *Processor) rcReconcilePayment(ctx context.Context, fulfillment Fulfillm
 	if err != nil {
 		return err
 	}
-	client, err := p.spaceXClient(ctx)
+	client, err := p.cardPlatform(ctx, stage.ProviderKey.String)
 	if err != nil {
 		return err
 	}
@@ -250,7 +254,7 @@ func (p *Processor) rcReconcileProgressionEvidence(ctx context.Context, fulfillm
 	if err != nil {
 		return err
 	}
-	client, err := p.spaceXClient(ctx)
+	client, err := p.cardPlatform(ctx, stage.ProviderKey.String)
 	if err != nil {
 		return err
 	}
@@ -283,20 +287,28 @@ func (p *Processor) rcLoadPaymentStage(ctx context.Context, query store.Execer, 
 	if key != "plus" && key != "upgrade" {
 		return rcPaymentStage{}, coded("PAYMENT_STAGE_EVIDENCE_INCOMPLETE", "payment stage key is invalid")
 	}
-	cardColumn, cardJoin := "NULL", ""
+	cardColumns, cardJoin := "NULL,NULL", ""
 	if includeCard {
-		cardColumn = "card.upstream_card_id"
+		hasProvider, err := tableHasColumn(ctx, query, "managed_cards", "provider_key")
+		if err != nil {
+			return rcPaymentStage{}, err
+		}
+		if hasProvider {
+			cardColumns = "card.provider_key,card.upstream_card_id"
+		} else {
+			cardColumns = "'spacexcard',card.upstream_card_id"
+		}
 		cardJoin = "LEFT JOIN managed_cards card ON card.id=stage.card_id"
 	}
 	row := query.QueryRowContext(ctx, `SELECT stage.id,stage.fulfillment_id,stage.stage_key,stage.expected_tier,
       stage.attempt_no,stage.card_id,stage.price_signal_min,stage.price_signal_max,stage.submit_permitted_at,
-      stage.matched_auth_id,`+cardColumn+`
+	      stage.matched_auth_id,`+cardColumns+`
     FROM membership_payment_stages stage `+cardJoin+`
     WHERE stage.fulfillment_id=? AND stage.stage_key=?`, fulfillmentID, key)
 	var stage rcPaymentStage
 	err := row.Scan(&stage.ID, &stage.FulfillmentID, &stage.StageKey, &stage.ExpectedTier, &stage.AttemptNo,
 		&stage.CardID, &stage.PriceMin, &stage.PriceMax, &stage.SubmitPermittedAt,
-		&stage.MatchedAuthID, &stage.UpstreamCardID)
+		&stage.MatchedAuthID, &stage.ProviderKey, &stage.UpstreamCardID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return rcPaymentStage{}, coded("PAYMENT_STAGE_EVIDENCE_INCOMPLETE", "payment stage evidence is incomplete")
 	}
@@ -1099,7 +1111,7 @@ func (p *Processor) rcApplyRenewalObservation(ctx context.Context, fulfillmentID
 }
 
 func (p *Processor) rcRefreshSettlement(ctx context.Context, fulfillment Fulfillment, now time.Time) error {
-	rows, err := p.store.DB().QueryContext(ctx, `SELECT stage.stage_key,stage.card_id,card.upstream_card_id
+	rows, err := p.store.DB().QueryContext(ctx, `SELECT stage.stage_key,stage.card_id,card.provider_key,card.upstream_card_id
     FROM membership_payment_stages stage
     LEFT JOIN managed_cards card ON card.id=stage.card_id
     WHERE stage.fulfillment_id=? AND stage.settlement_state='PENDING'
@@ -1108,14 +1120,15 @@ func (p *Processor) rcRefreshSettlement(ctx context.Context, fulfillment Fulfill
 		return err
 	}
 	type pendingStage struct {
-		key        string
-		cardID     sql.NullString
-		upstreamID sql.NullInt64
+		key         string
+		cardID      sql.NullString
+		providerKey sql.NullString
+		upstreamID  sql.NullInt64
 	}
 	var stages []pendingStage
 	for rows.Next() {
 		var stage pendingStage
-		if err := rows.Scan(&stage.key, &stage.cardID, &stage.upstreamID); err != nil {
+		if err := rows.Scan(&stage.key, &stage.cardID, &stage.providerKey, &stage.upstreamID); err != nil {
 			rows.Close()
 			return err
 		}
@@ -1128,7 +1141,7 @@ func (p *Processor) rcRefreshSettlement(ctx context.Context, fulfillment Fulfill
 		if !stage.cardID.Valid || !stage.upstreamID.Valid || stage.upstreamID.Int64 <= 0 {
 			return coded("MANAGED_CARD_NOT_FOUND", "managed card is missing")
 		}
-		client, err := p.spaceXClient(ctx)
+		client, err := p.cardPlatform(ctx, stage.providerKey.String)
 		if err != nil {
 			return err
 		}
@@ -1204,6 +1217,9 @@ func (p *Processor) rcRecordFailure(ctx context.Context, fulfillmentID string, c
 	code := errorCode(cause)
 	if len(code) > 100 {
 		code = code[:100]
+	}
+	if isSessionFailureCode(code) {
+		return p.handleSessionFailure(ctx, fulfillmentID, code, "reconciliation", now)
 	}
 	return p.withFencedImmediate(ctx, func(tx *sql.Tx) error {
 		at := store.ISO(now)

@@ -162,9 +162,11 @@ func NormalizeMembershipEnvelope(payload []byte, now time.Time) (*MembershipObse
 		var message string
 		if json.Unmarshal(root["message"], &message) == nil &&
 			strings.TrimSpace(message) == "您还没有订阅,允许您生成订阅链接" {
+			autoRenew := false
 			return &MembershipObservation{
 				ProviderCode: 200,
 				AccountType:  TierFree,
+				AutoRenew:    &autoRenew,
 				ObservedAt:   utcNow(now),
 			}, nil
 		}
@@ -313,7 +315,8 @@ func ClassifyStartingMembership(observation *MembershipObservation) (StartingMem
 		return "", contractError("会员状态观察无效")
 	}
 	if observation.AccountType == TierFree {
-		if !observation.IsOverdue && !observation.IsDelinquent {
+		if !observation.IsOverdue && !observation.IsDelinquent &&
+			observation.AutoRenew != nil && !*observation.AutoRenew {
 			return StartingMembershipFree, nil
 		}
 		return StartingMembershipUnknown, nil
@@ -381,7 +384,7 @@ func CalculateMembershipBudget(signals []PriceSignal, targetTier Tier, now time.
 	budget := MembershipBudget{TargetTier: targetTier, Stages: make([]BudgetStage, 0, len(required))}
 	for _, tier := range required {
 		signal, found := byTier[tier]
-		providerTime, timeValid := ParseSpaceXCardTime(signal.Time)
+		providerTime, timeValid := parseSpaceXCardPriceTime(signal.Time, now)
 		age := now.Sub(providerTime)
 		priceCents, moneyErr := CentsFromUSD(signal.AmountUSD)
 		if !found || !signal.Found || math.IsNaN(signal.AmountUSD) || math.IsInf(signal.AmountUSD, 0) || signal.AmountUSD <= 0 || moneyErr != nil ||
@@ -406,6 +409,23 @@ func CalculateMembershipBudget(signals []PriceSignal, targetTier Tier, now time.
 
 func ParseSpaceXCardTime(value string) (time.Time, bool) {
 	return parseProviderTimestamp(strings.TrimSpace(value))
+}
+
+func parseSpaceXCardPriceTime(value string, now time.Time) (time.Time, bool) {
+	value = strings.TrimSpace(value)
+	parsed, valid := ParseSpaceXCardTime(value)
+	if !valid || !parsed.After(now.Add(providerFutureTolerance)) || !strings.HasSuffix(value, "Z") {
+		return parsed, valid
+	}
+	// The price endpoint documents a timezone-less provider-local timestamp.
+	// Some responses append Z without converting the UTC+8 wall clock. Correct
+	// only an otherwise-impossible future value when that interpretation is
+	// plausible; truly current UTC timestamps remain untouched.
+	providerLocal, err := time.Parse(time.RFC3339Nano, strings.TrimSuffix(value, "Z")+"+08:00")
+	if err != nil || providerLocal.After(now.Add(providerFutureTolerance)) {
+		return parsed, valid
+	}
+	return providerLocal.UTC(), true
 }
 
 func CentsFromUSD(value float64) (int64, error) {

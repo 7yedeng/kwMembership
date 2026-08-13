@@ -57,6 +57,25 @@ func TestSpaceXRechargeSendsPersistedIdempotencyKey(t *testing.T) {
 	}
 }
 
+func TestSpaceXFreezeCardSendsFreezeRequest(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodPost || request.URL.Path != "/cards/freeze" {
+			t.Fatalf("unexpected request %s %s", request.Method, request.URL.Path)
+		}
+		body, _ := io.ReadAll(request.Body)
+		if string(body) != `{"card_id":7,"freeze":true}` {
+			t.Fatalf("body = %s", body)
+		}
+		_, _ = io.WriteString(response, `{"code":0,"msg":"ok"}`)
+	}))
+	defer server.Close()
+	client, _ := NewSpaceXClient(server.Client(), "", "secret")
+	client.baseURL = server.URL
+	if err := client.FreezeCard(context.Background(), 7); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestSpaceXGetCardMaterialValidatesAndReturnsEphemeralFields(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		if request.URL.Path != "/cards/7" {
@@ -87,6 +106,73 @@ func TestNormalizeCookieEnvelopeBindsSessionIdentity(t *testing.T) {
 	}
 	if _, err := normalizeCookieEnvelope(raw, "other@example.com"); err == nil {
 		t.Fatal("identity mismatch accepted")
+	}
+}
+
+func TestNormalizeCookieEnvelopeAcceptsDocumentedHTTPSuccessCode(t *testing.T) {
+	raw := []byte(`{"code":200,"data":{"count":1,"email":"buyer@example.com","cookies":[{"domain":".chatgpt.com","hostOnly":false,"httpOnly":true,"name":"__Secure-next-auth.session-token","path":"/","sameSite":"lax","secure":true,"session":true,"storeId":null,"value":"secret"}]}}`)
+	cookies, err := normalizeCookieEnvelope(raw, "buyer@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cookies) != 1 || cookies[0].Name != cookieBaseName {
+		t.Fatalf("unexpected cookies: %+v", cookies)
+	}
+}
+
+func TestGPTCheckoutAcceptsDocumentedHTTPSuccessCode(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.Header.Get("Authorization") != "Bearer private-token" {
+			t.Fatal("missing GPT bearer token")
+		}
+		_, _ = io.WriteString(response, `{"code":200,"data":{"link":"https://chatgpt.com/checkout/safe"},"message":"ok"}`)
+	}))
+	defer server.Close()
+	client := NewGPTClient(server.Client())
+	client.http.Transport = rewriteTransport{target: server.URL, base: http.DefaultTransport}
+	url, err := client.CheckoutURL(context.Background(), json.RawMessage(`{"user":{"email":"buyer@example.com"}}`), "private-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if url != "https://chatgpt.com/checkout/safe" {
+		t.Fatalf("checkout URL = %q", url)
+	}
+}
+
+func TestGPTCheckoutClassifiesSanitizedContractBoundaries(t *testing.T) {
+	tests := map[string]struct {
+		payload string
+		code    string
+	}{
+		"invalid json":      {payload: `{`, code: "CHECKOUT_BROKER_RESPONSE_INVALID"},
+		"invalid code":      {payload: `{"code":"200","data":{"link":"https://chatgpt.com/checkout/safe"}}`, code: "CHECKOUT_BROKER_CODE_INVALID"},
+		"business rejected": {payload: `{"code":400,"message":"not exposed"}`, code: "CHECKOUT_BROKER_BUSINESS_REJECTED"},
+		"link missing":      {payload: `{"code":200,"data":{}}`, code: "CHECKOUT_BROKER_LINK_MISSING"},
+		"link invalid":      {payload: `{"code":200,"data":{"link":"https://example.com/not-allowed"}}`, code: "CHECKOUT_BROKER_LINK_INVALID"},
+	}
+	for name, item := range tests {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+				_, _ = io.WriteString(response, item.payload)
+			}))
+			defer server.Close()
+			client := NewGPTClient(server.Client())
+			client.http.Transport = rewriteTransport{target: server.URL, base: http.DefaultTransport}
+			_, err := client.CheckoutURL(context.Background(), json.RawMessage(`{"user":{"email":"buyer@example.com"}}`), "private-token")
+			requireProviderErrorCode(t, err, item.code)
+		})
+	}
+}
+
+func TestValidateCheckoutURLAllowsOpenAILLCPath(t *testing.T) {
+	for _, prefix := range []string{"oaics_", "cs_"} {
+		value := "https://chatgpt.com/checkout/openai_llc/" + prefix + "4e33c980620248fb926f384591ae06f1"
+		if got, err := validateCheckoutURL(value); err != nil || got != value {
+			t.Fatalf("validateCheckoutURL() = %q, %v", got, err)
+		}
+	}
+	if _, err := validateCheckoutURL("https://chatgpt.com/checkout/other_org/oaics_4e33c980620248fb926f384591ae06f1"); err == nil {
+		t.Fatal("unexpected checkout organization accepted")
 	}
 }
 
@@ -140,7 +226,7 @@ func TestSpaceXOpenCardRejectsMissingRequiredNumericFields(t *testing.T) {
 
 func TestSpaceXPriceSignalsRejectMissingFound(t *testing.T) {
 	client := newSpaceXResponseClient(t, `{"code":0,"data":[{"tier":"plus","label":"Plus","min_usd":1,"max_usd":2,"amount":0,"time":""},{"tier":"x5","label":"X5","min_usd":1,"max_usd":2,"amount":0,"time":"","found":false},{"tier":"x20","label":"X20","min_usd":1,"max_usd":2,"amount":0,"time":"","found":false}]}`)
-	_, err := client.GetOpenAIPayments(context.Background(), 7)
+	_, err := client.GetOpenAIPayments(context.Background(), 7, nil)
 	requireProviderErrorCode(t, err, "SPACEXCARD_CONTRACT_DRIFT")
 }
 

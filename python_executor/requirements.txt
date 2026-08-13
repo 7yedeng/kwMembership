@@ -1,0 +1,3 @@
+# Install this only on an executor host that has separately passed the live
+# payment qualification checks. Fixture mode does not import Playwright.
+playwright==1.61.0

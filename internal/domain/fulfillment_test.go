@@ -216,12 +216,14 @@ func TestNormalizeMembershipEnvelopeClassifiesRejectedSession(t *testing.T) {
 
 func TestClassifyStartingMembership(t *testing.T) {
 	t.Parallel()
+	autoRenewFalse := false
 	cases := []struct {
 		name string
 		in   MembershipObservation
 		want StartingMembershipClassification
 	}{
-		{name: "clean free", in: MembershipObservation{AccountType: TierFree}, want: StartingMembershipFree},
+		{name: "clean free", in: MembershipObservation{AccountType: TierFree, AutoRenew: &autoRenewFalse}, want: StartingMembershipFree},
+		{name: "free with unknown renewal is unknown", in: MembershipObservation{AccountType: TierFree}, want: StartingMembershipUnknown},
 		{name: "overdue free is unknown", in: MembershipObservation{AccountType: TierFree, IsOverdue: true}, want: StartingMembershipUnknown},
 		{name: "paid delinquent", in: MembershipObservation{AccountType: TierX5, Currency: "PHP", ExpireTimeFuture: true, IsDelinquent: true}, want: StartingMembershipDelinquent},
 		{name: "paid active", in: MembershipObservation{AccountType: TierPlus, Currency: "USD", ExpireTimeFuture: true}, want: StartingMembershipSubscribed},
@@ -332,6 +334,21 @@ func TestCalculateMembershipBudgetFreshnessBoundaries(t *testing.T) {
 				t.Fatalf("budget = %+v, error = %v", budget, err)
 			}
 		})
+	}
+}
+
+func TestCalculateMembershipBudgetCorrectsProviderLocalClockMislabelledAsUTC(t *testing.T) {
+	t.Parallel()
+	now := mustTime(t, "2026-07-26T09:42:16Z")
+	budget, err := CalculateMembershipBudget([]PriceSignal{{
+		Tier: TierPlus, Found: true, AmountUSD: 16.05, Time: "2026-07-26T17:40:04Z",
+	}}, TierPlus, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if budget.TotalCents != 1625 || len(budget.Stages) != 1 ||
+		budget.Stages[0].ProviderTime.Format(time.RFC3339) != "2026-07-26T09:40:04Z" {
+		t.Fatalf("unexpected corrected budget: %+v", budget)
 	}
 }
 

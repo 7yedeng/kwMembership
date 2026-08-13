@@ -18,6 +18,13 @@ if [ -z "$RUN_USER" ] || ! id "$RUN_USER" >/dev/null 2>&1; then
   echo "set KWMEMBERSHIP_USER to the same Unix user that runs kwRedeem"
   exit 1
 fi
+PYTHON_BIN="$(command -v python3 || true)"
+if [ -z "$PYTHON_BIN" ]; then
+  echo "Python 3 is required for the serial payment executor"
+  exit 1
+fi
+CHECKOUT_EXECUTOR="$(sed -n 's/^[[:space:]]*KWMEMBERSHIP_CHECKOUT_EXECUTOR[[:space:]]*=[[:space:]]*//p' "$ROOT_DIR/.env" | tail -n 1 | tr -d '\"' | tr -d "'")"
+CHECKOUT_EXECUTOR="${CHECKOUT_EXECUTOR:-python}"
 
 KAWANG_ROOT="$(sed -n 's/^[[:space:]]*KAWANG_PROJECT_ROOT[[:space:]]*=[[:space:]]*//p' "$ROOT_DIR/.env" | tail -n 1)"
 KAWANG_ROOT="${KAWANG_ROOT%\"}"
@@ -54,9 +61,24 @@ sed \
   -e "s|@@ENV_FILE@@|$ENV_FILE|g" \
   -e "s|@@KAWANG_DATA_DIR@@|$KAWANG_DATA_DIR|g" \
   "$INSTALL_DIR/systemd/kwmembership-worker.service" > /etc/systemd/system/kwmembership-worker.service
+sed \
+  -e "s|@@INSTALL_DIR@@|$INSTALL_DIR|g" \
+  -e "s|@@RUN_USER@@|$RUN_USER|g" \
+  -e "s|@@ENV_FILE@@|$ENV_FILE|g" \
+  -e "s|@@KAWANG_DATA_DIR@@|$KAWANG_DATA_DIR|g" \
+  -e "s|@@PYTHON_BIN@@|$PYTHON_BIN|g" \
+  "$INSTALL_DIR/systemd/kwmembership-python-executor.service" > /etc/systemd/system/kwmembership-python-executor.service
 
 systemctl daemon-reload
 systemctl disable --now kwmembership-api.service >/dev/null 2>&1 || true
 rm -f /etc/systemd/system/kwmembership-api.service
 systemctl enable --now kwmembership-worker.service
+if [ "$CHECKOUT_EXECUTOR" = "python" ]; then
+  systemctl enable --now kwmembership-python-executor.service
+else
+  systemctl disable --now kwmembership-python-executor.service >/dev/null 2>&1 || true
+fi
 systemctl --no-pager --full status kwmembership-worker.service
+if systemctl is-enabled --quiet kwmembership-python-executor.service; then
+  systemctl --no-pager --full status kwmembership-python-executor.service
+fi

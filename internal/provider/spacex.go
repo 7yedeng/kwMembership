@@ -27,7 +27,9 @@ type SpaceXClient struct {
 
 type Product struct {
 	ProductCode string
+	OpenEnabled bool
 	OpenFee     float64
+	OpenFeeRate float64
 	RechargeFee float64
 	MinAmount   float64
 	MaxAmount   float64
@@ -103,6 +105,12 @@ func NewSpaceXClient(client *http.Client, appID, appSecret string) (*SpaceXClien
 		return nil, fail("SPACEXCARD_OPENAPI_NOT_CONFIGURED", "SpaceX Card OpenAPI app_secret is not configured", false)
 	}
 	return &SpaceXClient{http: client, appID: strings.TrimSpace(appID), appSecret: strings.TrimSpace(appSecret), baseURL: SpaceXCardBaseURL}, nil
+}
+
+func (c *SpaceXClient) Key() string { return CardPlatformSpaceX }
+
+func (c *SpaceXClient) Capabilities() CardPlatformCapabilities {
+	return CardPlatformCapabilities{Freeze: true, OpenCard: true, Recharge: true, RechargeIdempotent: true}
 }
 
 func (c *SpaceXClient) request(ctx context.Context, method, path string, input any, idempotencyKey string, output any) error {
@@ -204,7 +212,7 @@ func (c *SpaceXClient) ListProducts(ctx context.Context) ([]Product, error) {
 			return nil, fail("SPACEXCARD_CONTRACT_DRIFT", "SpaceX Card product contract drift", true)
 		}
 		seen[code] = true
-		products = append(products, Product{ProductCode: code, OpenFee: *item.OpenFee, RechargeFee: *item.RechargeFee, MinAmount: *item.MinAmount, MaxAmount: *item.MaxAmount})
+		products = append(products, Product{ProductCode: code, OpenEnabled: true, OpenFee: *item.OpenFee, RechargeFee: *item.RechargeFee, MinAmount: *item.MinAmount, MaxAmount: *item.MaxAmount})
 	}
 	return products, nil
 }
@@ -337,7 +345,7 @@ func luhn(value string) bool {
 	return sum%10 == 0
 }
 
-func (c *SpaceXClient) GetOpenAIPayments(ctx context.Context, cardID int64) ([]PriceSignal, error) {
+func (c *SpaceXClient) GetOpenAIPayments(ctx context.Context, cardID int64, _ []Transaction) ([]PriceSignal, error) {
 	var raw []struct {
 		Tier   string   `json:"tier"`
 		Label  string   `json:"label"`
@@ -406,4 +414,11 @@ func (c *SpaceXClient) RechargeCard(ctx context.Context, cardID int64, amount fl
 		return fail("FUNDING_REQUEST_INVALID", "invalid recharge request", false)
 	}
 	return c.request(ctx, http.MethodPost, "/cards/recharge", map[string]any{"card_id": cardID, "amount": amount}, key, nil)
+}
+
+func (c *SpaceXClient) FreezeCard(ctx context.Context, cardID int64) error {
+	if cardID <= 0 {
+		return fail("CARD_FREEZE_REQUEST_INVALID", "invalid card freeze request", false)
+	}
+	return c.request(ctx, http.MethodPost, "/cards/freeze", map[string]any{"card_id": cardID, "freeze": true}, "", nil)
 }

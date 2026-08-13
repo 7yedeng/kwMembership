@@ -3,8 +3,10 @@ package processor
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"kwmembership/internal/provider"
@@ -21,6 +23,8 @@ const (
 var immediateCircuitCodes = map[string]bool{
 	"SPACEXCARD_AUTH_FAILED": true, "SPACEXCARD_ACCESS_DENIED": true,
 	"SPACEXCARD_CONTRACT_DRIFT": true, "SPACEXCARD_RESPONSE_INVALID": true,
+	"EFUNCARD_AUTH_FAILED": true, "EFUNCARD_ACCESS_DENIED": true,
+	"EFUNCARD_CONTRACT_DRIFT": true, "EFUNCARD_RESPONSE_INVALID": true,
 	"MEMBERSHIP_CONTRACT_UNKNOWN": true, "MEMBERSHIP_PROVIDER_RESPONSE_INVALID": true,
 	"MEMBERSHIP_PROVIDER_RESPONSE_TOO_LARGE": true,
 }
@@ -28,7 +32,112 @@ var immediateCircuitCodes = map[string]bool{
 var transientCircuitCodes = map[string]bool{
 	"SPACEXCARD_RATE_LIMITED": true, "SPACEXCARD_TIMEOUT": true, "SPACEXCARD_UNAVAILABLE": true,
 	"SPACEXCARD_RESPONSE_TOO_LARGE": true, "MEMBERSHIP_PROVIDER_RATE_LIMITED": true,
+	"EFUNCARD_RATE_LIMITED": true, "EFUNCARD_TIMEOUT": true, "EFUNCARD_UNAVAILABLE": true,
+	"EFUNCARD_RESPONSE_TOO_LARGE": true, "EFUNCARD_OPERATION_PENDING": true,
 	"MEMBERSHIP_PROVIDER_TIMEOUT": true, "MEMBERSHIP_PROVIDER_UNAVAILABLE": true,
+}
+
+type cardPlatformConfig struct {
+	Key                 string
+	Kind                string
+	BaseURL             sql.NullString
+	CredentialEncrypted sql.NullString
+}
+
+func (p *Processor) hasCardPlatformTable(ctx context.Context) (bool, error) {
+	var count int
+	err := p.store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master
+    WHERE type='table' AND name='membership_card_platforms'`).Scan(&count)
+	return count == 1, err
+}
+
+func (p *Processor) cardPlatform(ctx context.Context, key string) (provider.CardPlatform, error) {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		key = provider.CardPlatformSpaceX
+	}
+	hasTable, err := p.hasCardPlatformTable(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if hasTable {
+		var config cardPlatformConfig
+		err = p.store.DB().QueryRowContext(ctx, `SELECT key,kind,base_url,credential_encrypted
+      FROM membership_card_platforms WHERE key=?`, key).
+			Scan(&config.Key, &config.Kind, &config.BaseURL, &config.CredentialEncrypted)
+		if err == nil && config.CredentialEncrypted.Valid && config.CredentialEncrypted.String != "" {
+			plain, decryptErr := p.decrypter.Decrypt(config.CredentialEncrypted.String)
+			if decryptErr != nil {
+				return nil, codedWrap("CARD_PLATFORM_NOT_CONFIGURED", "decrypt card platform credential", decryptErr)
+			}
+			switch config.Kind {
+			case provider.CardPlatformSpaceX:
+				var credential struct {
+					AppID     string `json:"appId"`
+					AppSecret string `json:"appSecret"`
+				}
+				if json.Unmarshal([]byte(plain), &credential) != nil || strings.TrimSpace(credential.AppSecret) == "" {
+					return nil, coded("CARD_PLATFORM_NOT_CONFIGURED", "SpaceX Card credential is invalid")
+				}
+				return provider.NewSpaceXClient(p.httpClient, credential.AppID, credential.AppSecret)
+			case provider.CardPlatformEfun:
+				var credential struct {
+					APIKey string `json:"apiKey"`
+				}
+				if json.Unmarshal([]byte(plain), &credential) != nil || strings.TrimSpace(credential.APIKey) == "" {
+					return nil, coded("CARD_PLATFORM_NOT_CONFIGURED", "EfunCard credential is invalid")
+				}
+				return provider.NewEfunCardClient(p.httpClient, config.BaseURL.String, credential.APIKey)
+			default:
+				return nil, coded("CARD_PLATFORM_KIND_UNSUPPORTED", "card platform kind is unsupported")
+			}
+		}
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return nil, err
+		}
+		if key != provider.CardPlatformSpaceX {
+			return nil, coded("CARD_PLATFORM_NOT_CONFIGURED", "card platform is not configured")
+		}
+	}
+	if key != provider.CardPlatformSpaceX {
+		return nil, coded("CARD_PLATFORM_NOT_CONFIGURED", "card platform is not configured")
+	}
+	return p.spaceXClient(ctx)
+}
+
+func (p *Processor) enabledCardPlatformKeys(ctx context.Context) ([]string, error) {
+	hasTable, err := p.hasCardPlatformTable(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if !hasTable {
+		if _, err := p.spaceXClient(ctx); err != nil {
+			return nil, err
+		}
+		return []string{provider.CardPlatformSpaceX}, nil
+	}
+	rows, err := p.store.DB().QueryContext(ctx, `SELECT key FROM membership_card_platforms
+	    WHERE enabled=1 AND inventory_status='completed' ORDER BY priority,key`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var keys []string
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			return nil, err
+		}
+		keys = append(keys, key)
+	}
+	return keys, rows.Err()
+}
+
+func cardPlatformCircuit(key string) (string, string) {
+	if key == provider.CardPlatformSpaceX {
+		return "spacexcard_openapi", "default"
+	}
+	return "card_platform_openapi", key
 }
 
 func (p *Processor) spaceXClient(ctx context.Context) (*provider.SpaceXClient, error) {

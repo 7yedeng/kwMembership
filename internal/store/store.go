@@ -71,6 +71,7 @@ func (s *Store) VerifySharedSchema(ctx context.Context) error {
 		"live_canary_authorizations",
 		"automatic_checkout_quota_reservations",
 		"automatic_checkout_scopes",
+		"membership_checkout_commands",
 	} {
 		var found string
 		if err := s.db.QueryRowContext(ctx,

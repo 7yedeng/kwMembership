@@ -63,37 +63,29 @@ func (p *Processor) catchUpSessionActivation(ctx context.Context, limit int, now
 	}
 	changed := 0
 	for _, item := range candidates {
-		failActivation := func(code string) error {
-			retryAt := store.ISO(now.Add(sharedRetry))
-			_, err := p.transition(ctx, item.id, "MEMBERSHIP_CONTRACT_UNKNOWN", now, transitionOptions{
-				CurrentStage: pointer("eligibility"), FailureCode: pointer(code), RetryAt: &retryAt,
-				ExpectedRevision: &item.revision,
-			})
-			if err == nil {
-				changed++
-			}
-			return err
-		}
 		plain, err := p.decrypter.Decrypt(item.encrypted)
 		if err != nil {
-			if err := failActivation("SESSION_INVALID"); err != nil {
+			if err := p.handleSessionFailure(ctx, item.id, "SESSION_INVALID", "eligibility", now); err != nil {
 				return changed, err
 			}
+			changed++
 			continue
 		}
 		var session map[string]any
 		if json.Unmarshal([]byte(plain), &session) != nil {
-			if err := failActivation("SESSION_INVALID"); err != nil {
+			if err := p.handleSessionFailure(ctx, item.id, "SESSION_INVALID", "eligibility", now); err != nil {
 				return changed, err
 			}
+			changed++
 			continue
 		}
 		email := sessionEmail(session)
 		lock, err := deriveAccountLock(p.config.EncryptionKey, "", email)
 		if err != nil {
-			if err := failActivation("MEMBERSHIP_IDENTITY_INVALID"); err != nil {
+			if err := p.handleSessionFailure(ctx, item.id, "MEMBERSHIP_IDENTITY_INVALID", "eligibility", now); err != nil {
 				return changed, err
 			}
+			changed++
 			continue
 		}
 		activated, err := p.activateIdentity(ctx, item.orderNo, lock, now)
@@ -248,11 +240,11 @@ func (p *Processor) claimEligibility(ctx context.Context, now time.Time) (Fulfil
 func (p *Processor) processEligibility(ctx context.Context, fulfillment Fulfillment, now time.Time) error {
 	var encrypted string
 	if err := p.store.DB().QueryRowContext(ctx, `SELECT session_payload FROM redeem_orders WHERE id=?`, fulfillment.OrderID).Scan(&encrypted); err != nil {
-		return p.eligibilityFailure(ctx, fulfillment, "SESSION_INVALID", "MEMBERSHIP_CONTRACT_UNKNOWN", now, sharedRetry)
+		return p.handleSessionFailure(ctx, fulfillment.ID, "SESSION_INVALID", "eligibility", now)
 	}
 	plain, err := p.decrypter.Decrypt(encrypted)
 	if err != nil || !json.Valid([]byte(plain)) {
-		return p.eligibilityFailure(ctx, fulfillment, "SESSION_INVALID", "MEMBERSHIP_CONTRACT_UNKNOWN", now, sharedRetry)
+		return p.handleSessionFailure(ctx, fulfillment.ID, "SESSION_INVALID", "eligibility", now)
 	}
 	allowed, err := p.acquireCircuit(ctx, "membership_provider", "default", now)
 	if err != nil {
@@ -281,6 +273,36 @@ func (p *Processor) processEligibility(ctx context.Context, fulfillment Fulfillm
 	if err != nil {
 		cause := codedWrap(domain.ErrorCode(err), "membership provider response contract is invalid", err)
 		return p.eligibilityDependencyFailure(ctx, fulfillment, cause, "MEMBERSHIP_CONTRACT_UNKNOWN", now)
+	}
+	if observation.AutoRenew != nil && *observation.AutoRenew {
+		if err := p.persistObservation(ctx, fulfillment.ID, "", "starting_before_renewal_cancel", observation); err != nil {
+			return err
+		}
+		token, err := p.renewalToken(ctx)
+		if err != nil {
+			return p.eligibilityFailure(ctx, fulfillment, errorCode(err), "ACCOUNT_REPURCHASE_NOT_READY", now, sharedRetry)
+		}
+		if err := p.renewal.Cancel(ctx, json.RawMessage(plain), token); err != nil {
+			if isSessionFailureCode(errorCode(err)) {
+				return p.handleSessionFailure(ctx, fulfillment.ID, errorCode(err), "eligibility", now)
+			}
+			return p.eligibilityFailure(ctx, fulfillment, errorCode(err), "ACCOUNT_REPURCHASE_NOT_READY", now, sharedRetry)
+		}
+		if leaseErr := p.assertWorkAllowed(ctx); leaseErr != nil {
+			return leaseErr
+		}
+		raw, err = p.membership.Fetch(ctx, json.RawMessage(plain))
+		if leaseErr := p.assertWorkAllowed(ctx); leaseErr != nil {
+			return leaseErr
+		}
+		if err != nil {
+			return p.eligibilityDependencyFailure(ctx, fulfillment, err, "ACCOUNT_CHECKING", now)
+		}
+		observation, err = domain.NormalizeMembershipEnvelope(raw, now)
+		if err != nil {
+			cause := codedWrap(domain.ErrorCode(err), "post-cancellation membership response is invalid", err)
+			return p.eligibilityDependencyFailure(ctx, fulfillment, cause, "MEMBERSHIP_CONTRACT_UNKNOWN", now)
+		}
 	}
 	classification, err := domain.ClassifyStartingMembership(observation)
 	if err != nil {
@@ -319,8 +341,21 @@ func (p *Processor) processEligibility(ctx context.Context, fulfillment Fulfillm
 }
 
 func (p *Processor) eligibilityDependencyFailure(ctx context.Context, fulfillment Fulfillment, cause error, state string, now time.Time) error {
-	persistErr := p.eligibilityFailure(ctx, fulfillment, errorCode(cause), state, now, sharedRetry)
-	circuitErr := p.recordCircuitFailure(ctx, "membership_provider", "default", cause, now)
+	code := errorCode(cause)
+	var persistErr error
+	if isSessionFailureCode(code) {
+		persistErr = p.handleSessionFailure(ctx, fulfillment.ID, code, "eligibility", now)
+	} else {
+		persistErr = p.eligibilityFailure(ctx, fulfillment, code, state, now, sharedRetry)
+	}
+	var circuitErr error
+	if immediateCircuitCodes[code] || transientCircuitCodes[code] {
+		circuitErr = p.recordCircuitFailure(ctx, "membership_provider", "default", cause, now)
+	} else {
+		// An order-scoped response (for example an expired Session) proves the
+		// provider is reachable and must release a half-open global probe.
+		circuitErr = p.recordCircuitSuccess(ctx, "membership_provider", "default", now)
+	}
 	if persistErr != nil {
 		return withCircuitAccounting(persistErr, circuitErr)
 	}
@@ -385,13 +420,6 @@ func (p *Processor) preflightReadiness(ctx context.Context, fulfillment Fulfillm
 	if contractCount != 1 {
 		return p.eligibilityFailure(ctx, fulfillment, "CHECKOUT_PRICE_CONTRACT_MISSING", "CHECKOUT_PRICE_UNRECOGNIZED", now, sharedRetry)
 	}
-	var checkoutToken sql.NullString
-	if err := p.store.DB().QueryRowContext(ctx, `SELECT spacexcard_api_token_encrypted FROM extension_delivery_settings WHERE id='default'`).Scan(&checkoutToken); err != nil {
-		return err
-	}
-	if !checkoutToken.Valid || checkoutToken.String == "" {
-		return p.eligibilityFailure(ctx, fulfillment, "CHECKOUT_BROKER_NOT_CONFIGURED", "CHECKOUT_PRE_SUBMIT_FAILED", now, sharedRetry)
-	}
 	_, err = p.transition(ctx, fulfillment.ID, "CHECKOUT_PREFLIGHT_READY", now, transitionOptions{
 		CurrentStage: pointer("plus"), ExpectedRevision: &fulfillment.StateRevision,
 	})
@@ -449,7 +477,7 @@ func (p *Processor) inventoryPlanAvailable(ctx context.Context, tier domain.Tier
 	}
 	rows, err = p.store.DB().QueryContext(ctx, `SELECT DISTINCT c.id FROM card_product_policies p
     JOIN managed_cards c ON c.product_code=p.product_code
-    WHERE p.enabled=1 AND c.upstream_status='ACTIVE' AND c.reconciliation_state='READY'
+    WHERE p.enabled=1 AND `+productPriceEvidenceCardWhereSQL+`
     ORDER BY p.product_code,c.id`)
 	if err != nil {
 		return false, err

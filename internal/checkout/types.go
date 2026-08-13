@@ -2,7 +2,10 @@ package checkout
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/mail"
+	"strings"
 	"time"
 
 	"kwmembership/internal/provider"
@@ -11,9 +14,12 @@ import (
 type Mode string
 
 const (
-	ModePreflight Mode = "preflight"
-	ModeCheckout  Mode = "checkout"
-	ModeUpgrade   Mode = "upgrade"
+	ModePreflight            Mode = "preflight"
+	ModeInteractivePreflight Mode = "interactive-preflight"
+	ModeSessionPreflight     Mode = "session-preflight"
+	ModeSessionCheckout      Mode = "session-checkout"
+	ModeCheckout             Mode = "checkout"
+	ModeUpgrade              Mode = "upgrade"
 )
 
 type ActionKind string
@@ -65,11 +71,27 @@ type Permit struct{ ID string }
 
 type ActionOutcome struct{ Continue bool }
 
+type Handoff struct {
+	Type string
+	Page PageFacts
+}
+
+type HandoffHandler func(context.Context, Handoff) error
+
 // ActionGuard is the internal seam that makes every potentially money-bearing
 // click cross the durable database and transaction-snapshot fence first.
 type ActionGuard interface {
 	BeforeAction(context.Context, Action) (Permit, error)
+	ActivateAction(context.Context, Action, Permit) error
 	AfterAction(context.Context, Action, Permit) (ActionOutcome, error)
+}
+
+type ExecutionBinding struct {
+	FulfillmentID       string
+	FulfillmentRevision int64
+	AttemptNo           int64
+	PriorityClass       string
+	AdapterVersion      string
 }
 
 type Request struct {
@@ -79,9 +101,13 @@ type Request struct {
 	CheckoutURL   string
 	PlanURL       string
 	Cookies       []provider.SessionCookie
+	ExpectedEmail string
+	Session       json.RawMessage
 	PriceContract PriceContract
 	Material      *Material
 	Guard         ActionGuard
+	OnHandoff     HandoffHandler
+	Binding       ExecutionBinding
 }
 
 type PageFacts struct {
@@ -142,7 +168,21 @@ func uncertain(code, message string, action Action, permit Permit, cause error) 
 }
 
 const (
-	PlanManagementURL = "https://chatgpt.com/settings/subscription"
-	maxTransitions    = 6
-	pagePollInterval  = 250 * time.Millisecond
+	InteractiveLoginURL = "https://chatgpt.com/"
+	PlusPricingURL      = "https://chatgpt.com/#pricing"
+	PlanManagementURL   = "https://chatgpt.com/settings/subscription"
+	maxTransitions      = 6
+	pagePollInterval    = 250 * time.Millisecond
 )
+
+func normalizeEmail(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if len(value) == 0 || len(value) > 254 {
+		return ""
+	}
+	address, err := mail.ParseAddress(value)
+	if err != nil || !strings.EqualFold(address.Address, value) || !strings.Contains(value, "@") {
+		return ""
+	}
+	return value
+}

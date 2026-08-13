@@ -25,6 +25,39 @@ func (roundTrip paymentRoundTripper) RoundTrip(request *http.Request) (*http.Res
 	return roundTrip(request)
 }
 
+func TestPaymentFrozenFullCardIsPriceEvidenceButNotReservable(t *testing.T) {
+	ctx := context.Background()
+	repository, err := store.Open(filepath.Join(t.TempDir(), "frozen-price-evidence.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repository.Close()
+	if _, err := repository.DB().Exec(`CREATE TABLE managed_cards (
+    id TEXT PRIMARY KEY,product_code TEXT,upstream_status TEXT,reconciliation_state TEXT,capacity_state TEXT
+  ); CREATE TABLE card_price_signals (
+    card_id TEXT,tier TEXT,found INTEGER,amount REAL,min_usd REAL,max_usd REAL,provider_time TEXT
+  ); INSERT INTO managed_cards VALUES
+    ('card-frozen','product-1','FROZEN','READY','CAPACITY_FULL');
+  INSERT INTO card_price_signals VALUES
+    ('card-frozen','plus',1,20,15,25,'2026-07-20T00:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	processor := &Processor{store: repository}
+	now := time.Date(2026, 7, 20, 1, 0, 0, 0, time.UTC)
+	snapshot, err := processor.paymentLoadProvenProductSnapshot(ctx, "product-1", domain.TierPlus, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.TotalCents != 2020 {
+		t.Fatalf("snapshot total=%d", snapshot.TotalCents)
+	}
+	if err := paymentAssertCardReservable(paymentCard{
+		UpstreamStatus: "FROZEN", ReconciliationState: "READY", CapacityState: "CAPACITY_FULL",
+	}, domain.TierPlus); errorCode(err) != "MEMBERSHIP_CARD_NOT_READY" {
+		t.Fatalf("frozen full evidence became reservable: %v", err)
+	}
+}
+
 func TestPaymentFundingPlanUsesIntegerCents(t *testing.T) {
 	snapshot := paymentPriceSnapshot{TargetTier: domain.TierPlus, TotalCents: 2020}
 	card := paymentCard{ID: "mc_1", UpstreamCardID: 7, ProductCode: "product_1"}
