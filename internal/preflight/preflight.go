@@ -25,6 +25,7 @@ type priceContract struct {
 	ID        string  `json:"id"`
 	Version   int     `json:"version"`
 	Tier      string  `json:"tier"`
+	Country   string  `json:"country,omitempty"`
 	Currency  string  `json:"currency"`
 	MinAmount float64 `json:"minAmount"`
 	MaxAmount float64 `json:"maxAmount"`
@@ -193,7 +194,7 @@ func metadataRequest(email, tier string, contract priceContract, mode checkout.M
 		return checkout.Request{}, fail("PREFLIGHT_TARGET_UNSUPPORTED")
 	}
 	if !contractIDPattern.MatchString(contract.ID) || contract.Version < 1 || contract.Tier != tier ||
-		contract.Currency != "PHP" || math.IsNaN(contract.MinAmount) || math.IsInf(contract.MinAmount, 0) ||
+		math.IsNaN(contract.MinAmount) || math.IsInf(contract.MinAmount, 0) ||
 		math.IsNaN(contract.MaxAmount) || math.IsInf(contract.MaxAmount, 0) ||
 		contract.MinAmount <= 0 || contract.MaxAmount < contract.MinAmount {
 		return checkout.Request{}, fail("PREFLIGHT_PRICE_CONTRACT_INVALID")
@@ -202,13 +203,17 @@ func metadataRequest(email, tier string, contract priceContract, mode checkout.M
 	if expected == "" {
 		return checkout.Request{}, fail("EXPECTED_IDENTITY_MISSING")
 	}
-	return checkout.Request{
+	request := checkout.Request{
 		Mode: mode, Stage: tier, TargetTier: tier, ExpectedEmail: expected,
 		PriceContract: checkout.PriceContract{
-			ID: contract.ID, Version: contract.Version, Tier: tier, Currency: "PHP",
+			ID: contract.ID, Version: contract.Version, Tier: tier, Country: contract.Country, Currency: contract.Currency,
 			MinAmount: contract.MinAmount, MaxAmount: contract.MaxAmount,
 		},
-	}, nil
+	}
+	if _, _, err := checkout.ExpectedCheckoutMarket(request); err != nil {
+		return checkout.Request{}, fail("PREFLIGHT_PRICE_CONTRACT_INVALID")
+	}
+	return request, nil
 }
 
 func Check(prepared Prepared) Report {
@@ -232,6 +237,10 @@ func execute(ctx context.Context, prepared Prepared, executor checkout.Executor,
 	if !prepared.validated || executor == nil {
 		return report, fail("PREFLIGHT_INPUT_INVALID")
 	}
+	expectedCountry, expectedCurrency, err := checkout.ExpectedCheckoutMarket(prepared.request)
+	if err != nil {
+		return report, fail("PREFLIGHT_PRICE_CONTRACT_INVALID")
+	}
 	if err := ctx.Err(); err != nil {
 		return report, fail(SafeCode(err))
 	}
@@ -250,7 +259,7 @@ func execute(ctx context.Context, prepared Prepared, executor checkout.Executor,
 		(page.Origin != "https://chatgpt.com" && page.Origin != "https://pay.openai.com") ||
 		(page.RouteTemplate != "/checkout" && page.RouteTemplate != "/checkout/{id}" && page.RouteTemplate != "/pay/{id}") ||
 		page.Plan != prepared.request.TargetTier || page.Plan != contract.Tier ||
-		page.Country != "PH" || page.Currency != contract.Currency || page.DisplayedAmount == nil ||
+		page.Country != expectedCountry || page.Currency != expectedCurrency || page.DisplayedAmount == nil ||
 		math.IsNaN(*page.DisplayedAmount) || math.IsInf(*page.DisplayedAmount, 0) ||
 		*page.DisplayedAmount < contract.MinAmount || *page.DisplayedAmount > contract.MaxAmount {
 		return report, fail("CHECKOUT_UI_UNSUPPORTED")

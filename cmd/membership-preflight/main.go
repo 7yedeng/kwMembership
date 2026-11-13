@@ -24,6 +24,8 @@ Default --check validates local input only; remoteVerified remains false.
 --interactive-preflight accepts metadata only, opens a fresh headed browser, and
 waits for the user to log in and navigate to a Plus or Go checkout without collecting tokens.
 Go is observation-only: automatic Session checkout and payment remain unsupported.
+Egyptian Go observation requires explicit priceContract.country=EG and currency=EGP.
+Legacy PH/PHP input remains supported. Amounts must be supplied, never inferred.
 Run options: --chrome-path PATH [--proxy-server URL] [--headed] [--timeout 90s]
 Interactive login has a fixed 5m wait and a 5m30s outer browser budget; --timeout
 does not shorten these. SIGINT/SIGTERM also cancel an unfinished stdin read.

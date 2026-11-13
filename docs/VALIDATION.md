@@ -7,7 +7,7 @@
 | 验证 | 命令 | 结果 |
 | --- | --- | --- |
 | Go 全量测试 | `go test -count=1 ./...` | 新增 schema-check 命令与包后共 13 个 package，全部通过；使用 Go 1.26.11。 |
-| Python 与填表 JS 本地测试 | `python3 -m unittest discover -s python_executor/tests -v` | 共 58 项：45 项实际通过，13 项真实浏览器测试明确 skip；默认官方 headless shell 未安装。新增 6 项套餐脚本测试执行真实生产常量，全部使用本地合成 fetch/DOM。 |
+| Python 与填表 JS 本地测试 | `python3 -m unittest discover -s python_executor/tests -v` | 共 59 项：46 项实际通过，13 项真实浏览器测试明确 skip；默认官方 headless shell 未安装。其中 7 项套餐/地区脚本测试执行真实生产常量，全部使用本地合成 fetch/DOM。 |
 | GitHub 浏览器门禁 | `.github/workflows/offline-validation.yml` | 在独立 runner 安装固定版本 Playwright 的官方浏览器；`KWMEMBERSHIP_REQUIRE_BROWSER_TESTS=1`，缺浏览器和任何 skip 都令 job 失败。此行说明门禁，实际成功/失败见 Actions 日志。 |
 | 补丁空白/冲突标记检查 | `git diff --check` | 通过。 |
 | 研究清单校对 | 对照非测试 Go SQL 引用、预检列表、文档相对链接 | 35 张业务表集合与源码一致；17 项预检标记一致；源码链接有效。 |
@@ -52,8 +52,10 @@ Go package 范围：`cmd/membership-worker`、`cmd/membership-preflight`、`cmd/
 - 交互身份响应含刷新错误时拒绝；账号来源上新观察失败会清除旧身份确认。
 - Node VM 直接执行 Go/Python 两份 Plus 准备脚本：活跃 go/Go/GO 合成订阅的 POST 数为 0；合成免费账号对照仍只请求原 Plus SKU。
 - Go 页面检查脚本只识别明确属性，未知或缺失值不会根据正文、标题或 URL 猜套餐。这不是线上 Go 页面适配证据。
+- 埃及 Go 仅允许交互观察的 EG/EGP 明确组合；缺国家、错配、Plus 或自动执行模式均被拒绝。旧 PHP 省略 country 和显式 PH 均保留兼容，空 Country 不改变旧 worker JSON。
+- 合成埃及页面的套餐、国家、币种、金额与契约分别比对；缺失值不从正文或 URL 补全。测试中的 193 不进入生产默认值，`paymentAllowed` 仍为 false。
 
-代码：[go_preflight_test.go](../internal/checkout/go_preflight_test.go)、[Go 预检测试](../internal/preflight/go_test.go)、[bridge 套餐测试](../internal/executor/plan_contract_test.go)、[test_plan_scripts.py](../python_executor/tests/test_plan_scripts.py)。
+代码：[go_preflight_test.go](../internal/checkout/go_preflight_test.go)、[Go 预检测试](../internal/preflight/go_test.go)、[埃及执行器契约测试](../internal/checkout/egypt_contract_test.go)、[埃及 CLI 契约测试](../internal/preflight/egypt_test.go)、[bridge 套餐测试](../internal/executor/plan_contract_test.go)、[test_plan_scripts.py](../python_executor/tests/test_plan_scripts.py)。
 
 ### 只读数据库契约检查
 
@@ -104,6 +106,8 @@ Python 生产 `FILL_FRAME_JS` 和 Go 生产 `fillFrameFunction` 分别直接送�
 
 **当前本地完整 Chromium 的离线页面测试没有通过环境启动阶段。** 普通权限下 `socket(AF_UNIX, SOCK_STREAM/DGRAM)` 返回 EPERM，`socketpair` 和 AF_INET 回环 TCP 可用；完整 Chromium 在 ProcessSingleton 创建 Unix socket 时退出。此前扩大执行权限的申请被自动审批拒绝；本轮没有关闭或绕过宿主策略。官方 headless shell 的普通安装下载得到无效 ZIP，尚未取得可启动文件，不能把它写成复现了相同 IPC 故障。
 
+本轮最小探测再次确认错误发生在 `socket()` 构造时，尚未调用 `bind()` 或 `listen()`。路径和抽象地址方案不能改变这一调用；DevTools TCP/pipe 与 ProcessSingleton 是不同通道。实际探测结果、源码依据和推论范围见 [IPC_DIAGNOSIS_FOLLOWUP.md](IPC_DIAGNOSIS_FOLLOWUP.md)。
+
 新增 [test_browser_fill.py](../python_executor/tests/test_browser_fill.py) 和 [browser_fill.html](../python_executor/tests/browser_fill.html) 包含 13 个真实浏览器测试方法。所有 HTTP 请求本地 fulfill 或 abort，fixture 响应必须有标记；未知 HTTP 请求必须被中止且不能取得响应。使用新 context、禁止 service worker，并配置关闭的回环代理防止意外外联。这些是合成 DOM 的真实浏览器测试，不是登录或支付网站实测。
 
 CI 启动与依赖缺失必须失败；本地允许 skip 时会打印具体安装/IPC原因。已通过模拟缺失浏览器的强制门禁检查，证明 required 模式不会以 skip 获得成功。CI 不读取真实账号、卡或 repo secrets，也不上传浏览器 profile、Session、HAR 或页面截图。
@@ -122,7 +126,7 @@ python3 -m unittest discover -s python_executor/tests -v
 git diff --check
 ```
 
-Python DOM 模拟测试在没有 Node.js 时会明确 skip；本轮运行环境有 Node.js，因此这 16 项均实际执行。Node.js 仅用于这些测试，没有增加到付款执行器的生产依赖。
+Python DOM 模拟测试在没有 Node.js 时会明确 skip；本轮运行环境有 Node.js，16 项填表 DOM 测试与 7 项套餐/地区脚本测试均实际执行。Node.js 仅用于这些测试，没有增加到付款执行器的生产依赖。
 
 在支持浏览器的常规测试主机或 CI 上执行：
 

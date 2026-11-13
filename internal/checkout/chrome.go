@@ -978,7 +978,11 @@ func classify(page inspectedPage, request Request, purpose string) string {
 	} else if request.Stage == "upgrade" {
 		expectedPlan = map[string]string{"x5": "prolite", "x20": "pro"}[request.TargetTier]
 	}
-	base := page.Plan == expectedPlan && page.Country == "PH" && page.Currency == "PHP" && page.DisplayedAmount != nil &&
+	expectedCountry, expectedCurrency, err := ExpectedCheckoutMarket(request)
+	if err != nil {
+		return "UNKNOWN_PAYMENT_STATE"
+	}
+	base := page.Plan == expectedPlan && page.Country == expectedCountry && page.Currency == expectedCurrency && page.DisplayedAmount != nil &&
 		*page.DisplayedAmount >= request.PriceContract.MinAmount && *page.DisplayedAmount <= request.PriceContract.MaxAmount
 	if purpose == "selection" {
 		base = base && page.Origin == "https://chatgpt.com" && page.RouteTemplate == "/settings/subscription"

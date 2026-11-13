@@ -54,11 +54,12 @@ const elements = new Map((fixture.elements || []).map(item => [item.selector, {
 const context = vm.createContext({
   location: {
     origin: 'https://chatgpt.com', pathname: '/checkout',
-    search: '?plan=go', href: 'https://chatgpt.com/checkout?plan=go',
+    search: fixture.search || '?plan=go',
+    href: 'https://chatgpt.com/checkout' + (fixture.search || '?plan=go'),
   },
   document: {
     querySelector: selector => elements.get(selector) || null,
-    body: {textContent: 'ChatGPT Go. Try Go. Go back.'},
+    body: {textContent: fixture.bodyText || 'ChatGPT Go. Try Go. Go back.'},
     title: 'ChatGPT Go',
   },
   Date: FixtureDate,
@@ -158,6 +159,34 @@ class PlanScriptsTest(unittest.TestCase):
     def test_explicit_plus_is_not_relabelled_by_visible_go_text(self) -> None:
         facts = self.inspect_plan({"selector": "[data-kw-plan]", "attributes": {"data-kw-plan": "plus"}})
         self.assertEqual(facts["plan"], "plus")
+
+    def test_egypt_country_and_currency_require_explicit_facts_without_changing_plan(self) -> None:
+        source = self.go_source("inspectFrameJS")
+        for plan in ("go", "plus"):
+            for country, currency, expected_country, expected_currency in (
+                ("EG", "EGP", "EG", "EGP"),
+                (None, "EGP", None, "EGP"),
+                ("EG", None, "EG", None),
+                ("ZZ", "EGP", None, "EGP"),
+                ("EG", "ZZZ", "EG", None),
+                (None, None, None, None),
+            ):
+                with self.subTest(plan=plan, country=country, currency=currency):
+                    elements = [{"selector": "[data-kw-plan]", "attributes": {"data-kw-plan": plan}}]
+                    for field, value in (("country", country), ("currency", currency), ("amount", "123.45")):
+                        if value is not None:
+                            elements.append({"selector": f'meta[name="openai-{field}"]', "attributes": {"content": value}})
+                    output = self.run_source(source, {
+                        "kind": "inspect", "elements": elements,
+                        "bodyText": "ChatGPT Go. Egypt EG. EGP 123.45. Synthetic page text only.",
+                        "search": "?plan=go&country=EG&currency=EGP",
+                    })
+                    self.assertEqual(output["facts"], {
+                        "plan": plan, "country": expected_country,
+                        "currency": expected_currency, "displayedAmount": 123.45,
+                    })
+                    self.assertEqual(output["calls"], {"sessionReads": 0, "subscriptionReads": 0, "checkoutPosts": 0, "unexpected": 0})
+                    self.assertEqual(output["checkoutPlans"], [])
 
 
 if __name__ == "__main__":

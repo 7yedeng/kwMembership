@@ -148,8 +148,8 @@ const inspectFrameJS = `(() => {
     origin,
     routeTemplate: route,
     plan: ['go', 'plus', 'prolite', 'pro'].includes(planRaw) ? planRaw : null,
-    country: countryRaw === 'PH' ? 'PH' : null,
-    currency: currencyRaw === 'PHP' ? 'PHP' : null,
+    country: ['PH', 'EG'].includes(countryRaw) ? countryRaw : null,
+    currency: ['PHP', 'EGP'].includes(currencyRaw) ? currencyRaw : null,
     displayedAmount: Number.isFinite(amount) && amount > 0 ? amount : null,
     stateMarker: ['card-entry', 'billing-entry', 'review', 'upgrade-selection', 'challenge', 'complete'].includes(stateRaw) ? stateRaw : null,
     fields: {

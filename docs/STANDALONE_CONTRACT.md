@@ -31,9 +31,9 @@ Python `executor.Bridge` 是共享数据库 command/lease 执行桥。即使只�
 | 默认 / `--check` | 封装请求 JSON | 有界解析、显式价格契约、Session cookie 可构造性、声明邮箱一致性 | 无 | `remoteVerified=false`；只说明本地输入契约成立 |
 | `--inspect-session` | 原始 Session 对象 | 只检查预定义字段存在性、JSON 类型和可解析到期时间 | 无 | 不返回邮箱、用户 ID、令牌或未知字段名称；`remoteVerified=false` |
 | `--run` | 与 check 相同 | 同样先做全部本地校验，然后构造固定 Session preflight 请求 | 可能创建 checkout 会话 | 只有返回受支持、价格一致的预检页面才可报告通过；不代表支付或订阅完成 |
-| `--interactive-preflight` | 仅 `expectedEmail`、`targetTier`、`priceContract` | 严格校验元数据，强制 headed、新建临时 profile | 打开站点、读取身份与页面；使用者导航可能创建 checkout | 身份及 Plus/PH/PHP/价格范围全部一致才通过；不收集或导出 Session/token，不提交付款 |
+| `--interactive-preflight` | 仅 `expectedEmail`、`targetTier`、`priceContract` | 严格校验元数据，强制 headed、新建临时 profile | 打开站点、读取身份与页面；使用者导航可能创建 checkout | 身份、套餐、国家、币种及价格范围全部一致才通过；不收集或导出 Session/token，不提交付款 |
 
-普通 Session 封装请求只接受 `session`、`expectedEmail`、`targetTier`、`priceContract`。交互入口只有后三个元数据字段，明确拒绝 `session`、`sessionToken`、`accessToken`、`cookies`、卡材料及 profile/checkout 地址等其他字段。两者的价格契约只接受 `id`、`version`、`tier`、`currency`、`minAmount`、`maxAmount`，且 tier/target 必须为 `plus`，currency 必须为 `PHP`，金额为有限正数并满足 `maxAmount >= minAmount`。价格必须来自使用者已经核实的契约；CLI 不写死实际套餐价格，也不把页面价格自动登记为经过批准的价格契约。
+普通 Session 封装请求只接受 `session`、`expectedEmail`、`targetTier`、`priceContract`。交互入口只有后三个元数据字段，明确拒绝 `session`、`sessionToken`、`accessToken`、`cookies`、卡材料及 profile/checkout 地址等其他字段。价格契约只接受 `id`、`version`、`tier`、可选 `country`、`currency`、`minAmount`、`maxAmount`；金额为有限正数并满足 `maxAmount >= minAmount`。Session 入口只接受 Plus/PH/PHP，交互入口另接受 Go/PH/PHP 与 Go/EG/EGP。EGP 必须显式指定 `country=EG`；只有旧 PHP 契约可以省略 country 并兼容为 PH。tier 必须与 target 一致。价格必须来自使用者已经核实的契约；CLI 不写死实际套餐价格，也不把页面价格自动登记为经过批准的价格契约。
 
 封装请求及价格契约的未知字段、尾随 JSON、过大输入均拒绝。Session 本体沿用现有 provider 的异构对象契约：可包含 provider 不使用的服务端字段，但不会把未知键或值写入诊断。`--inspect-session` 是结构检查工具，不负责验证 Session 有效性。
 

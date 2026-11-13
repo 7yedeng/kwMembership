@@ -33,6 +33,7 @@ type PriceContract struct {
 	ID        string
 	Version   int
 	Tier      string
+	Country   string `json:",omitempty"`
 	Currency  string
 	MinAmount float64
 	MaxAmount float64

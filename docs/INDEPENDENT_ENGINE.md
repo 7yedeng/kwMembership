@@ -132,11 +132,13 @@ worker, err := processor.NewWithServices(
 
 ### 3.6 Go 观察与只读数据库检查
 
-交互预检新增 Go 目标，严格核对观察套餐与契约；自动 Session 入口仍拒绝 Go。Go/Python 的 Plus 准备脚本会在明确的活跃 Go 订阅事实下停止。两种执行入口共用当前阶段与价格契约校验，避免 Go 契约进入 Plus 付款命令。真实 Go DOM、内部 SKU、付款和取消仍未验证，见 [GO_PLAN_PREFLIGHT.md](GO_PLAN_PREFLIGHT.md)。
+交互预检新增 Go 目标，严格核对观察套餐与契约；埃及 Go 要求显式 EG/EGP，旧 PH/PHP 保持兼容。自动 Session 入口仍拒绝 Go。Go/Python 的 Plus 准备脚本会在明确的活跃 Go 订阅事实下停止。两种执行入口共用当前阶段与价格契约校验，避免 Go 契约进入 Plus 付款命令；EG/EGP 也不能进入自动执行。真实 Go DOM、内部 SKU、付款和取消仍未验证，见 [GO_PLAN_PREFLIGHT.md](GO_PLAN_PREFLIGHT.md)。
 
 [`membership-schema-check`](../cmd/membership-schema-check/main.go) 现可独立检查已存在的静止 SQLite 快照。它核对嵌入契约中的生产所需列、明确的 UPSERT 唯一键以及已有正式 lease DDL 条件；只读取 schema metadata，拒绝 WAL/SHM/journal sidecar，不创建或迁移数据库。未知生产约束始终保留，`productionReady` 和 `paymentAllowed` 均不会因表名齐全而变成 true。完整用法见 [SCHEMA_CHECK.md](SCHEMA_CHECK.md)。
 
 每次执行的独立 profile 已有实现，但队列仍全局单活跃，代理仍为进程配置；按订单固定路由和真正并发尚未实现。已核验的现状、三次 IPC 复查与所需单库字段设计见 [SERVER_ISOLATION_AND_IPC.md](SERVER_ISOLATION_AND_IPC.md)。
+
+后续最小 IPC 复查确认 Unix socket 在创建阶段即返回 EPERM，未执行 bind；自有 TCP 通信可用不等于 Chromium 内部 socket 可替换。逐项分析见 [IPC_DIAGNOSIS_FOLLOWUP.md](IPC_DIAGNOSIS_FOLLOWUP.md)。
 
 ## 4. “只接卡台”要求卡台提供什么
 
