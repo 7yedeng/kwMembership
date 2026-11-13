@@ -120,6 +120,47 @@ func TestPrepaymentReusesOwnedSessionUntilFinalReadbackAndNeverSubmits(t *testin
 	}
 }
 
+func TestPrepaymentObservationRejectsUnstableCompleteAndStaleQuotes(t *testing.T) {
+	for _, scenario := range []string{"complete but not stable", "last read failed"} {
+		t.Run(scenario, func(t *testing.T) {
+			_, fake := prepaymentFixture(t)
+			observation := fake.observations[0]
+			observation.Page.Fields = map[string]bool{"number": true}
+			calls := 0
+			timeout := time.Millisecond
+			if scenario == "last read failed" {
+				timeout = pagePollInterval + 50*time.Millisecond
+			}
+			_, err := waitPrepaymentObservation(context.Background(), timeout, func() bool { return true }, func(context.Context) (prepaymentObservation, error) {
+				calls++
+				if scenario == "last read failed" && calls > 1 {
+					return prepaymentObservation{}, errors.New("synthetic renderer detached")
+				}
+				return observation, nil
+			})
+			if err == nil || SafePrepaymentCode(err) != "PREPAYMENT_PAGE_UNSUPPORTED" {
+				t.Fatalf("unconfirmed quote accepted: %v", err)
+			}
+			if scenario == "last read failed" && calls < 2 {
+				t.Fatal("fixture did not exercise a failed newer read")
+			}
+		})
+	}
+}
+
+func TestPrepaymentObservationCanExplainFreshMissingFacts(t *testing.T) {
+	_, fake := prepaymentFixture(t)
+	observation := fake.observations[0]
+	observation.Evidence.Tax = nil
+	observation.Missing = missingPrepaymentFacts(observation.Evidence)
+	result, err := waitPrepaymentObservation(context.Background(), time.Millisecond, func() bool { return true }, func(context.Context) (prepaymentObservation, error) {
+		return observation, nil
+	})
+	if err != nil || len(result.Missing) != 1 || result.Missing[0] != "tax" {
+		t.Fatalf("fresh incomplete evidence was lost: %v %+v", err, result.Missing)
+	}
+}
+
 func TestPrepaymentBillingCanUnlockTaxBeforeCardMaterial(t *testing.T) {
 	request, fake := prepaymentFixture(t)
 	material := request.Material

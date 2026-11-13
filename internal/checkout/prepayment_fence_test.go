@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/chromedp/cdproto/target"
+	"github.com/chromedp/chromedp"
 )
 
 func TestPrepaymentKnownConfirmationRoutesAreBlockedWithoutReadingBody(t *testing.T) {
@@ -31,6 +32,27 @@ func TestPrepaymentKnownConfirmationRoutesAreBlockedWithoutReadingBody(t *testin
 		if isKnownPaymentConfirmation(url) {
 			t.Fatal("read/quote request was classified as confirmation")
 		}
+	}
+}
+
+func TestPrepaymentChildContextInheritsExistingBrowserWithoutAllocationOptions(t *testing.T) {
+	parent, cancel := chromedp.NewContext(context.Background())
+	defer cancel()
+	state := chromedp.FromContext(parent)
+	// A deliberately unstarted structural fixture: creating a child context
+	// must not run CDP, launch Chrome or apply Browser allocation options.
+	state.Browser = &chromedp.Browser{}
+	state.Target = &chromedp.Target{}
+	child, err := newPrepaymentTargetContext(parent, "owned-iframe")
+	if err != nil || child == nil {
+		t.Fatalf("child context failed: %v", err)
+	}
+	childState := chromedp.FromContext(child)
+	if childState.Browser != state.Browser || childState.Target != nil {
+		t.Fatal("child replaced the owned browser or initialized a target")
+	}
+	if _, err := newPrepaymentTargetContext(context.Background(), "unowned"); err == nil {
+		t.Fatal("unowned context accepted")
 	}
 }
 

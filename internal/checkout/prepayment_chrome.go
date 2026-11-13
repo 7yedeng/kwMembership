@@ -252,12 +252,14 @@ func waitPrepaymentObservation(ctx context.Context, timeout time.Duration, billi
 	var last prepaymentObservation
 	var previous string
 	stable := 0
+	latestReadSucceeded := false
 	for time.Now().Before(deadline) {
 		current, err := inspect(ctx)
 		if err != nil && (SafePrepaymentCode(err) == "PREPAYMENT_SUBMISSION_BLOCKED" || SafePrepaymentCode(err) == "PREPAYMENT_FENCE_UNAVAILABLE") {
 			return current, err
 		}
 		if err == nil {
+			latestReadSucceeded = true
 			last = current
 			if current.Challenge {
 				return current, nil
@@ -277,6 +279,11 @@ func waitPrepaymentObservation(ctx context.Context, timeout time.Duration, billi
 				(!billingApplied() || len(current.Missing) == 0) {
 				return current, nil
 			}
+		} else {
+			// A renderer/navigation error breaks continuity. A prior good
+			// quote must never survive newer unreadable browser state.
+			latestReadSucceeded = false
+			stable, previous = 0, ""
 		}
 		select {
 		case <-ctx.Done():
@@ -284,7 +291,9 @@ func waitPrepaymentObservation(ctx context.Context, timeout time.Duration, billi
 		case <-time.After(pagePollInterval):
 		}
 	}
-	if last.EvidenceSource != "" {
+	if latestReadSucceeded && last.EvidenceSource != "" && len(last.Missing) > 0 {
+		// Preserve only a fresh incomplete report so the caller can explain
+		// missing facts. A complete but unstable quote is not acceptable.
 		return last, nil
 	}
 	return last, prepaymentFail("PREPAYMENT_PAGE_UNSUPPORTED")

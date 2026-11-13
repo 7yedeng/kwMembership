@@ -193,8 +193,11 @@ func (driver *chromePrepaymentDriver) attachPrepaymentTarget(id target.ID, kind 
 	fence.mu.Unlock()
 	go func() {
 		defer fence.pending.Add(-1)
-		quiet := func(string, ...any) {}
-		child, _ := chromedp.NewContext(driver.ctx, chromedp.WithTargetID(id), chromedp.WithLogf(quiet), chromedp.WithErrorf(quiet), chromedp.WithDebugf(quiet))
+		child, err := newPrepaymentTargetContext(driver.ctx, id)
+		if err != nil {
+			fence.markFailed()
+			return
+		}
 		driver.listenFence(child)
 		// Auto-attachment paused this renderer. Install its own interception and
 		// document hooks before resuming it; no site-isolation flags are changed.
@@ -228,6 +231,20 @@ func (driver *chromePrepaymentDriver) attachPrepaymentTarget(id target.ID, kind 
 			fence.markFailed()
 		}
 	}()
+}
+
+func newPrepaymentTargetContext(parent context.Context, id target.ID) (context.Context, error) {
+	if parent == nil || parent.Err() != nil {
+		return nil, prepaymentFail("PREPAYMENT_FENCE_UNAVAILABLE")
+	}
+	state := chromedp.FromContext(parent)
+	if state == nil || state.Browser == nil || state.Target == nil || id == "" {
+		return nil, prepaymentFail("PREPAYMENT_FENCE_UNAVAILABLE")
+	}
+	// WithLogf/WithErrorf/WithDebugf are Browser allocation options and panic
+	// when a Browser already exists. Child targets inherit its quiet logging.
+	child, _ := chromedp.NewContext(parent, chromedp.WithTargetID(id))
+	return child, nil
 }
 
 func (driver *chromePrepaymentDriver) frameContexts() []context.Context {
