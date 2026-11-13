@@ -54,7 +54,9 @@
 - Python/Chromium：59项测试通过，零跳过。页面使用本地合成fixture，不是真实ChatGPT或Stripe付款页。
 - 完整Chrome/Xvfb：既有生产浏览器启动测试和新增 `TestSessionChromeCookieRuntimeLocal` 均明确pass；后者只停留在about:blank，验证合成Cookie写入/精确回读、浏览器保活和临时profile删除。
 
-当前聊天云容器中相同Chromium填表组仍有13项因AF_UNIX限制跳过；CI通过不代表该容器限制已解除，也不代表真实账号、Go报价或付款已验证。本节之后仅有交付说明修订，实际源码版本以工具包 `SOURCE.json` 和PR最新提交为准。
+上述为早期验收。随后提交 `eb4309f8c4173a982c7499d29f290ab8a94c7047` 的 [CI 第12次运行](https://github.com/7yedeng/kwMembership/actions/runs/43483012192) 三个作业全部通过：16个Go包、41项油猴测试、6项桌面控制器测试、64项Python测试（零跳过）、严格三轮全新浏览器生命周期、7项真实Chromium输入隔离检查，以及完整Chrome/Xvfb启动和本地Cookie回读。新增对账修复及其证据见上方专题文档。
+
+当前聊天云容器仍存在AF_UNIX启动限制；CI通过不代表该容器限制已解除，也不代表真实Go报价或付款已验证。真实登录的两个账号验收来自用户本机反馈。已安装会话EXE仍来自 `36c1af26`，会话核心未在本轮改动；启动脚本与油猴0.1.2单独更新，不能把旧发行包称作本轮全新构建。
 
 ## 下一步的单笔验收顺序
 

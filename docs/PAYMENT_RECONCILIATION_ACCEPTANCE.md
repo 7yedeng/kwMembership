@@ -71,6 +71,8 @@ GOTOOLCHAIN=local GOPROXY=off go test ./internal/domain ./internal/processor -co
 
 两个包通过。上表的问题均先写契约测试，在旧逻辑上观察到相应失败，再修复；未用生产接口、真实 Session 或卡片替代测试夹具。新增测试和既有合成测试只能证明这些本地契约，不能证明卡台/账号外部接口此刻可用。
 
+最终提交 `eb4309f8c4173a982c7499d29f290ab8a94c7047` 已在本地和 [GitHub Actions 第 12 次运行](https://github.com/7yedeng/kwMembership/actions/runs/43483012192) 通过全部 16 个 Go 包测试。独立代码复核补充发现的“已完成清算借用授权金额”问题已关闭，并覆盖初次确认与后续刷新两条路径。
+
 ## 后续真实单笔验收清单
 
 当前不执行以下操作。待拥有外部配置、合法账号和该笔实际付款授权后，在**受支持的套餐及币种契约**内执行一次 canary，并保留可复核的非敏感证据。

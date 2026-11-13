@@ -69,7 +69,17 @@ python3 scripts/verify-prepayment-restarts.py --require-browser --output /tmp/pr
 - 对本机已有 `/usr/bin/chromium` 做了一次独立尝试，启动被 `ProcessSingleton` 的 AF_UNIX socket 环境限制阻止，返回 `CHROMIUM_UNIX_SOCKET_DENIED`。
 - 本机真实浏览器完成数为 **0/3**，入口退出码 **2**，状态 **incomplete**。
 
-没有修改安全策略、IPC 权限或站点访问限制。三轮实际 DOM 结果须由具备正常 Chromium 环境的 CI 严格执行后补充，不能把本机的跳过结果写成三轮通过。
+没有修改安全策略、IPC 权限或站点访问限制。本段记录的是聊天容器的结果，不能把该环境的不完整结果写成三轮通过。
+
+随后，提交 `eb4309f8c4173a982c7499d29f290ab8a94c7047` 的 [GitHub Actions 第 12 次运行](https://github.com/7yedeng/kwMembership/actions/runs/43483012192) 在正常 Chromium 环境中严格执行成功：
+
+- Python 测试共 64 项通过，零跳过。
+- 单独运行严格重复启动入口，`expectedLifecycles=3`、`completedLifecycles=3`、`skipped=0`、`failures=0`、`errors=0`。
+- 三轮均精确回读表单、隔离 iframe、清除上轮状态并停止在提交之前；每轮 `paymentSubmitted=false`、`browserClosed=true`，未标记响应及未知请求均为零。
+- 油猴输入隔离的七项真实 Chromium 检查通过。它们使用合成页面和合成 paste 事件，不读取真实账号或系统剪贴板。
+- 另外两个 CI 作业也通过：16 个 Go 包、41 项油猴测试、6 项桌面控制器测试，以及完整 Chrome/Xvfb 的启动与本地 Cookie 回读检查。
+
+这些结果证明正常运行环境中的浏览器机制与本地契约，不解除聊天容器的 IPC/站点访问限制，也不代表真实 Go 结账或支付已通过。
 
 ## 5. 登录之后的六个节点：顺序、所需证据与失败处理
 
