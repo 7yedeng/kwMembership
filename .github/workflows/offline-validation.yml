@@ -90,6 +90,19 @@ jobs:
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.12'
+      - name: Restore the official Chrome package installation
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          executable = Path('/opt/google/chrome/chrome')
+          metadata = executable.stat()
+          print({'vendor_chrome_before_reinstall': {
+              'uid': metadata.st_uid, 'gid': metadata.st_gid,
+              'mode': oct(metadata.st_mode & 0o7777),
+              'is_symlink': executable.is_symlink()}})
+          PY
+          sudo apt-get update
+          sudo apt-get install --reinstall --yes google-chrome-stable
       - name: Inspect the vendor-installed full Chrome runtime
         run: |
           command -v Xvfb
@@ -110,6 +123,9 @@ jobs:
           if not executable.is_file() or executable.is_symlink() or not os.access(executable, os.X_OK):
               raise SystemExit('VENDOR_CHROME_EXECUTABLE_MISSING')
           metadata = executable.stat()
+          print({'vendor_chrome_after_reinstall': {
+              'uid': metadata.st_uid, 'gid': metadata.st_gid,
+              'mode': oct(metadata.st_mode & 0o7777)}})
           if metadata.st_uid != 0 or metadata.st_mode & 0o022:
               raise SystemExit('VENDOR_CHROME_OWNERSHIP_INVALID')
           with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as environment:
