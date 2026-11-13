@@ -21,9 +21,10 @@ type Processor struct {
 	lease      store.Lease
 	decrypter  *secure.Decrypter
 	httpClient *http.Client
-	membership *provider.MembershipClient
-	renewal    *provider.RenewalClient
-	address    *provider.AddressClient
+	membership membershipReader
+	renewal    renewalCanceller
+	accounts   AccountService
+	address    BillingService
 	executor   checkout.Executor
 	now        func() time.Time
 	// requireLeaseFence is set by New. Package tests may deliberately construct
@@ -63,6 +64,42 @@ func NewWithExecutor(cfg config.Config, repository *store.Store, lease store.Lea
 		now:               time.Now,
 		requireLeaseFence: true,
 	}
+}
+
+// NewWithAccountService uses an explicitly supplied account implementation for
+// both membership observations and renewal cancellation. It never falls back to
+// the legacy membership or renewal providers, including when the service fails.
+// The executor, shared store, lease fencing and payment gates are unchanged.
+func NewWithAccountService(cfg config.Config, repository *store.Store, lease store.Lease, decrypter *secure.Decrypter, executor checkout.Executor, accounts AccountService) (*Processor, error) {
+	if accounts == nil {
+		return nil, coded("ACCOUNT_SERVICE_NOT_CONFIGURED", "account service is required")
+	}
+	p := NewWithExecutor(cfg, repository, lease, decrypter, executor)
+	p.accounts = accounts
+	p.membership = nil
+	p.renewal = nil
+	return p, nil
+}
+
+// Services selects explicitly owned account and billing dependencies. Neither
+// service falls back to a legacy network provider when unavailable.
+type Services struct {
+	Accounts AccountService
+	Billing  BillingService
+}
+
+// NewWithServices injects both account and billing implementations while keeping
+// the same durable processor, checkout executor and payment authorization gates.
+func NewWithServices(cfg config.Config, repository *store.Store, lease store.Lease, decrypter *secure.Decrypter, executor checkout.Executor, services Services) (*Processor, error) {
+	if services.Billing == nil {
+		return nil, coded("BILLING_SERVICE_NOT_CONFIGURED", "billing service is required")
+	}
+	p, err := NewWithAccountService(cfg, repository, lease, decrypter, executor, services.Accounts)
+	if err != nil {
+		return nil, err
+	}
+	p.address = services.Billing
+	return p, nil
 }
 
 // RunOnce is the external interface of the Go Membership Processor module.

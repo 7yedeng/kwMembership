@@ -1,5 +1,7 @@
 # kwMembership
 
+> **7yedeng 自有付款引擎研究分支（2026-11-13）**：本分支增加账号/账单服务注入、卡台地址配置和支付执行边界修复。请先阅读 [自有引擎实现与验收](docs/INDEPENDENT_ENGINE.md)、[源码依赖清单](docs/DEPENDENCY_INVENTORY.md) 和 [验证记录](docs/VALIDATION.md)。当前默认 worker 仍采用下文的 kwRedeem 配套方式；本分支尚不构成脱离配套系统即可实际付款的成品。
+
 独立的 Go 会员自动化 worker。代码与 kwRedeem 分开维护，但直接读取和写入 kwRedeem 的 SQLite/WAL 数据库，不创建第二套会员数据库。
 
 Go worker 负责：
@@ -40,7 +42,7 @@ bash scripts/start-worker.sh
 KWMEMBERSHIP_EXECUTOR_SECRET=<与 .env 相同的随机密钥> python3 -m python_executor
 ```
 
-`scripts/check.sh` 会确认它打开的是 kwRedeem 数据库且共享表完整；只有 `legacy-go` 模式会启动一次 `about:blank` Chrome 自检。检查不会获取订单或执行付款。
+`scripts/check.sh` 会打开配置的 kwRedeem 数据库，并检查 `VerifySharedSchema` 列出的 17 个表名是否存在；这不等于完整验证所有业务表、列、索引或生产迁移。只有 `legacy-go` 模式会启动一次 `about:blank` Chrome 自检。检查不会获取订单或执行付款。
 
 启动 kwRedeem API 后，进入“会员履约 → 实施状态”，应看到：
 

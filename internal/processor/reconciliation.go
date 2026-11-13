@@ -387,19 +387,7 @@ func (p *Processor) rcLoadSession(ctx context.Context, fulfillmentID string) (js
 }
 
 func (p *Processor) rcFetchMembershipObservation(ctx context.Context, session json.RawMessage, now time.Time) (*domain.MembershipObservation, error) {
-	raw, err := p.membership.Fetch(ctx, session)
-	if err != nil {
-		return nil, err
-	}
-	observation, err := domain.NormalizeMembershipEnvelope(raw, now)
-	if err == nil {
-		return observation, nil
-	}
-	code := domain.ErrorCode(err)
-	if code == "" {
-		code = "MEMBERSHIP_CONTRACT_UNKNOWN"
-	}
-	return nil, codedWrap(code, "normalize membership observation", err)
+	return p.fetchMembershipObservation(ctx, session, now)
 }
 
 func (p *Processor) rcApplyPaymentEvidence(ctx context.Context, fulfillmentID, key string, events []provider.Transaction, observation *domain.MembershipObservation, now time.Time) error {
@@ -992,14 +980,11 @@ func (p *Processor) rcProtectRenewal(ctx context.Context, fulfillment Fulfillmen
 	shouldCancel := observation.AutoRenew != nil && *observation.AutoRenew &&
 		(!partial || p.rcShouldCancelPartialRenewal(observation, now))
 	if shouldCancel {
-		token, err := p.renewalToken(ctx)
-		if err != nil {
-			return err
-		}
 		if guardErr := p.assertWorkAllowed(ctx); guardErr != nil {
 			return &rcWorkGuardError{cause: guardErr}
 		}
-		cancelErr := p.renewal.Cancel(ctx, session, token)
+		cancelErr := p.cancelAutoRenewal(ctx, session)
+		cancelledAt := p.now()
 		if guardErr := p.assertWorkAllowed(ctx); guardErr != nil {
 			return &rcWorkGuardError{cause: guardErr}
 		}
@@ -1008,7 +993,7 @@ func (p *Processor) rcProtectRenewal(ctx context.Context, fulfillment Fulfillmen
 		}
 		// The cancellation response is not membership truth. Completion always
 		// requires a subsequent authoritative auto_renew=false observation.
-		observation, externalErr = p.rcFetchMembershipObservation(ctx, session, now)
+		observation, externalErr = p.fetchPostCancellationObservation(ctx, session, observation, cancelledAt, now)
 		if guardErr := p.assertWorkAllowed(ctx); guardErr != nil {
 			return &rcWorkGuardError{cause: guardErr}
 		}

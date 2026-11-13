@@ -23,6 +23,7 @@ const (
 var immediateCircuitCodes = map[string]bool{
 	"SPACEXCARD_AUTH_FAILED": true, "SPACEXCARD_ACCESS_DENIED": true,
 	"SPACEXCARD_CONTRACT_DRIFT": true, "SPACEXCARD_RESPONSE_INVALID": true,
+	"SPACEXCARD_CONFIGURATION_INVALID": true, "SPACEXCARD_REDIRECT_REFUSED": true,
 	"EFUNCARD_AUTH_FAILED": true, "EFUNCARD_ACCESS_DENIED": true,
 	"EFUNCARD_CONTRACT_DRIFT": true, "EFUNCARD_RESPONSE_INVALID": true,
 	"MEMBERSHIP_CONTRACT_UNKNOWN": true, "MEMBERSHIP_PROVIDER_RESPONSE_INVALID": true,
@@ -79,7 +80,7 @@ func (p *Processor) cardPlatform(ctx context.Context, key string) (provider.Card
 				if json.Unmarshal([]byte(plain), &credential) != nil || strings.TrimSpace(credential.AppSecret) == "" {
 					return nil, coded("CARD_PLATFORM_NOT_CONFIGURED", "SpaceX Card credential is invalid")
 				}
-				return provider.NewSpaceXClient(p.httpClient, credential.AppID, credential.AppSecret)
+				return provider.NewSpaceXClientWithBaseURL(p.httpClient, config.BaseURL.String, credential.AppID, credential.AppSecret)
 			case provider.CardPlatformEfun:
 				var credential struct {
 					APIKey string `json:"apiKey"`
