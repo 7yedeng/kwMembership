@@ -1,6 +1,6 @@
 # 浏览器扩展、Cookie 导入与站点权限核验
 
-核验日期：2026-11-13（Asia/Shanghai）。本轮范围是公开源码研究、官方插件入口检查和源码 Fork；没有导入真实 Session、验证真实账号登录或执行付款。
+核验日期：2026-11-13。本轮范围是公开源码研究、官方插件入口检查、源码 Fork 和用户提供的桌面 ZIP 静态审查；没有导入真实 Session、验证真实账号登录或执行付款。
 
 ## 1. 当前控制工具与限制边界
 
@@ -17,9 +17,9 @@
 
 ### 官方支持的排查入口
 
-[OpenAI 浏览器扩展文档](https://learn.chatgpt.com/docs/chrome-extension) 当前列出的入口是桌面应用 `Settings → Computer Use → 对应浏览器的 Manage`，管理站点允许与阻止列表。[应用设置文档](https://learn.chatgpt.com/docs/app/settings) 也说明 `Browser → Agent permissions` 下的浏览、下载、上传控制；界面名称因产品入口或版本不同可能有差异。应核对目标 host 的配置，不必为此放开所有网站。
+[OpenAI 官方帮助](https://help.openai.com/en/articles/20001277-using-the-built-in-browser-in-the-chatgpt-desktop-app) 明确区分两个入口：Chrome 扩展可以直接配合 ChatGPT 网页端使用，网页端的站点权限入口为 **`Settings → Chrome extension`**；[扩展文档](https://learn.chatgpt.com/docs/chrome-extension) 中的 `Settings → Computer Use → 对应浏览器的 Manage` 是桌面应用路径。此前只给出桌面路径不适用于所有用户，现已纠正。应核对目标 host 的配置，不必为此放开所有网站。
 
-官方一般连接排查包括更新应用与扩展、核对浏览器 profile、重启和新建对话。这些步骤用于排除配置或连接问题，**不能保证解除某个特定的 host gate**。组织策略或产品层限制需要对应管理方处理。当前没有可调用的工具来修改或读取这次拒绝所用的完整策略。
+官方一般连接排查包括更新应用与扩展、核对浏览器 profile、重启和新建对话。新对话主要用于排除已保存的站点拒绝等状态；此前本会话错误明确不是用户拒绝，不能据此认定新对话可解决。上述步骤用于排除配置或连接问题，**不能保证解除某个特定的 host gate**。组织策略或产品层限制需要对应管理方处理。当前没有可调用的工具来修改或读取这次拒绝所用的完整策略。
 
 ### 找到同类公开报告，但不是已确认修复
 
@@ -38,7 +38,7 @@
 | GPT 浏览器插件 | v4.3.21 | ChatGPT 账号注入、订阅查询、账单与支付升级工具 |
 | Claude 浏览器插件 | v1.3.2 | Claude 登录、订阅结账和付款资料辅助工具 |
 
-两个项目均有“下载插件(.zip)”按钮。版本是页面当时的显示值；尚未通过实际 ZIP 的 manifest 独立确认。
+两个项目均有“下载插件(.zip)”按钮。GPT 包随后已在用户桌面找到，manifest 独立确认版本为 4.3.21；Claude 版本仍只是官方页面显示值，未审查其 ZIP。
 
 同页“GPT账号管理工具在线”明确提供：
 
@@ -49,13 +49,13 @@
 
 这里只读取了功能说明，未提交 Session，未点击查询、取消续费、取链或付款。界面说明只能证明产品提供这些入口，不能证明任意账号的兼容性或实际成功率。
 
-### ZIP 下载尚未完成核验
+### 桌面 ZIP 已取得并完成静态审查
 
-GPT 插件的下载按钮已尝试，但 Browser 的下载事件等待超时，未返回可读取的文件路径。随后没有在当前用户的标准/系统 Downloads 目录发现本次相关 ZIP；这不能排除浏览器另设下载目录。
+此前 GPT 插件的下载按钮触发后，Browser 下载事件等待超时，未返回可读取的文件路径；标准/系统 Downloads 目录也未发现相关 ZIP。用户随后指出文件在桌面，已按该位置找到 `gpt-helper-extension-4.3.21.zip`（58,297 字节），复制后校验 SHA-256 一致并离线拆包。
 
 查看 `chrome://downloads/` 被 Browser URL policy 明确拒绝，因为此工具仅允许 HTTP/HTTPS 协议；没有再通过其他控制入口读取相同的被拒绝浏览器页面。独立的公开 HTTP GET `/gpt-tool` 则得到 Cloudflare HTTP 403 / error 1010，未取得页面资源或包地址。
 
-因此本次**尚未读到 Zovo 官方插件包的 manifest、background、popup、content script**。不能把其前端可读性、外部请求目的地、本地处理程度或许可证状态写成已审计事实。需要实际下载的 ZIP 或明确的本机 ZIP 文件路径，才能继续离线拆包。
+实际包共 11 项，含 manifest、background、credential-utils、sidepanel、README 与图标。已确认“写 Cookie → 回读 → 刷新标签 → 检查登录状态”的客户端流程；查询/取消续费仍依赖 Zovo 后端，支付入口自动填表但不提交最终付款，且没有 Go 套餐分支。完整文件清单、哈希、函数证据、账号隔离与外部依赖见 [4.3.21 实包审查](ZOVO_EXTENSION_4_3_21_REVIEW.md)。没有安装或运行扩展。
 
 ### 不能用同名扩展代替
 
@@ -127,6 +127,12 @@ Cookie-Editor 的 JSON 解析器本质是 `JSON.parse`，导入路径随后要�
 
 ## 6. 本轮完成与待核验项
 
-已完成：Zovo 官方插件入口及显示版本核对、Session 转换功能存在性核对、Cookie-Editor 完整源码下载/Fork/静态分析、官方站点权限文档与同类 issue 核查。
+已完成：Zovo 官方插件入口及显示版本核对、GPT 4.3.21 桌面 ZIP 的哈希/manifest/静态调用链审查、Session 导入后刷新流程核对、Cookie-Editor 完整源码下载/Fork/静态分析、网页端与桌面端权限入口区分，以及同类 issue 核查。
 
-仍待核验：Zovo 官方 ZIP 的实际代码；本会话 host gate 的具体生效策略与正式解除；真实 Session 的在线登录；Go 实际结账、付款和取消续费。本轮没有为这些未完成事项提供成功结论。
+仍待核验：本会话 host gate 的具体生效策略与正式解除；真实 Session 的在线登录；Go 实际结账、付款和取消续费。ZIP 不含 Zovo 后端与完整构建工程，也不能补齐这些证据。本轮没有为这些未完成事项提供成功结论。
+
+### 可直接反馈的问题说明
+
+> 复刻 AI 会员充值协议时，ChatGPT 已连接本机 Chrome，普通网页可正常操作，但访问 chatgpt.com 报 `host restrictions gate`，无法读取或操作账号页。Session 已提供，目前卡在浏览器工具的站点访问权限，尚未执行付款。希望确认这是产品限制还是故障，以及正式解决办法。
+
+此说明不混入另一云执行器的 IPC 错误，也不把用户已导入 Cookie 写成智能体已在线验证登录。
