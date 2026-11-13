@@ -9,6 +9,7 @@
 | Go 全量测试 | `go test -count=1 ./...` | 新增 schema-check 命令与包后共 13 个 package，全部通过；使用 Go 1.26.11。 |
 | Python 与填表 JS 本地测试 | `python3 -m unittest discover -s python_executor/tests -v` | 共 59 项：46 项实际通过，13 项真实浏览器测试明确 skip；默认官方 headless shell 未安装。其中 7 项套餐/地区脚本测试执行真实生产常量，全部使用本地合成 fetch/DOM。 |
 | GitHub 浏览器门禁 | `.github/workflows/offline-validation.yml` | 在独立 runner 安装固定版本 Playwright 的官方浏览器；`KWMEMBERSHIP_REQUIRE_BROWSER_TESTS=1`，缺浏览器和任何 skip 都令 job 失败。此行说明门禁，实际成功/失败见 Actions 日志。 |
+| 完整 Chromium / Xvfb 门禁 | `TestVerifyChromeHeadedRuntime` | 独立 job 安装完整浏览器，非 root、正常 sandbox 调用生产 `VerifyChrome`，只访问 about:blank；精确测试名必须产生 pass 事件。普通本地未配置时明确 skip，required 模式缺配置必须失败。真实启动结果见对应 Actions 日志。 |
 | 补丁空白/冲突标记检查 | `git diff --check` | 通过。 |
 | 研究清单校对 | 对照非测试 Go SQL 引用、预检列表、文档相对链接 | 35 张业务表集合与源码一致；17 项预检标记一致；源码链接有效。 |
 | 相关仓库差异 | 对固定版本的两个 `automation` 目录比较文件集合与 SHA-256 | PPCDK 与 ZovoCard 的该目录均为 12 文件，全部逐字节相同。 |
@@ -107,6 +108,8 @@ Python 生产 `FILL_FRAME_JS` 和 Go 生产 `fillFrameFunction` 分别直接送�
 **当前本地完整 Chromium 的离线页面测试没有通过环境启动阶段。** 普通权限下 `socket(AF_UNIX, SOCK_STREAM/DGRAM)` 返回 EPERM，`socketpair` 和 AF_INET 回环 TCP 可用；完整 Chromium 在 ProcessSingleton 创建 Unix socket 时退出。此前扩大执行权限的申请被自动审批拒绝；本轮没有关闭或绕过宿主策略。官方 headless shell 的普通安装下载得到无效 ZIP，尚未取得可启动文件，不能把它写成复现了相同 IPC 故障。
 
 本轮最小探测再次确认错误发生在 `socket()` 构造时，尚未调用 `bind()` 或 `listen()`。路径和抽象地址方案不能改变这一调用；DevTools TCP/pipe 与 ProcessSingleton 是不同通道。实际探测结果、源码依据和推论范围见 [IPC_DIAGNOSIS_FOLLOWUP.md](IPC_DIAGNOSIS_FOLLOWUP.md)。
+
+“本地”在上述记录中指当前受管云命令执行器，不是用户 Windows 电脑。另行验收的共享云浏览器只打开空白页，HTTPS 示例未通过；用户本机 Chrome 的官方 TodoMVC 示例输入、提交、勾选与页面更新通过。两者均未导入账号。完整浏览器与 headless shell、三个浏览器运行面的区别见 [BROWSER_RUNTIME_ACCEPTANCE.md](BROWSER_RUNTIME_ACCEPTANCE.md)。
 
 新增 [test_browser_fill.py](../python_executor/tests/test_browser_fill.py) 和 [browser_fill.html](../python_executor/tests/browser_fill.html) 包含 13 个真实浏览器测试方法。所有 HTTP 请求本地 fulfill 或 abort，fixture 响应必须有标记；未知 HTTP 请求必须被中止且不能取得响应。使用新 context、禁止 service worker，并配置关闭的回环代理防止意外外联。这些是合成 DOM 的真实浏览器测试，不是登录或支付网站实测。
 

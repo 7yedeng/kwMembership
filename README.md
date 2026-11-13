@@ -4,6 +4,8 @@
 
 新增：[Go 套餐非付款预检与埃及 EGP 契约](docs/GO_PLAN_PREFLIGHT.md)、[只读 worker 数据库契约检查](docs/SCHEMA_CHECK.md)、[服务器会话隔离与 IPC 审计](docs/SERVER_ISOLATION_AND_IPC.md)、[IPC 创建失败与替代方案复核](docs/IPC_DIAGNOSIS_FOLLOWUP.md)。Go 仅开放手动进入页面后的观察路径，EGP 必须显式配对 EG；默认 worker 的 Go 自动付款尚未实现。
 
+浏览器运行验证：[不同执行面与完整 Chromium + Xvfb 验收](docs/BROWSER_RUNTIME_ACCEPTANCE.md)、[Playwright 官方仓库与状态恢复说明](docs/PLAYWRIGHT_RUNTIME_NOTES.md)。独立 CI job 直接调用生产 `VerifyChrome`，保留正常 sandbox；结果不等同真实账号登录或充值成功。
+
 独立的 Go 会员自动化 worker。代码与 kwRedeem 分开维护，但直接读取和写入 kwRedeem 的 SQLite/WAL 数据库，不创建第二套会员数据库。
 
 Go worker 负责：

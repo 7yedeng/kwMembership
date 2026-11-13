@@ -71,3 +71,68 @@ jobs:
               print('Offline validation requires every test to execute; skipped tests fail CI.', file=sys.stderr)
           raise SystemExit(0 if result.wasSuccessful() and not result.skipped else 1)
           PY
+
+  chromium-headed-runtime:
+    if: github.repository == '7yedeng/kwMembership'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - name: Check out the reviewed source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Set up Go from go.mod
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - name: Install the pinned browser distribution
+        run: |
+          python -m pip install --disable-pip-version-check -r python_executor/requirements.txt
+          python -m playwright install --with-deps --no-shell chromium
+      - name: Resolve the full browser executable
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          from playwright.sync_api import sync_playwright
+
+          with sync_playwright() as playwright:
+              executable = Path(playwright.chromium.executable_path)
+          if not executable.is_file() or not os.access(executable, os.X_OK):
+              raise SystemExit('FULL_CHROMIUM_EXECUTABLE_MISSING')
+          if '\n' in str(executable) or '\r' in str(executable):
+              raise SystemExit('FULL_CHROMIUM_PATH_INVALID')
+          with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as environment:
+              environment.write(f'KWMEMBERSHIP_CHROME_RUNTIME_PATH={executable}\n')
+          PY
+      - name: Download public module dependencies
+        run: go mod download
+      - name: Verify the actual Go headed launch under Xvfb
+        env:
+          KWMEMBERSHIP_REQUIRE_CHROME_RUNTIME_TESTS: '1'
+          GOPROXY: 'off'
+          GOTOOLCHAIN: local
+        run: |
+          set -euo pipefail
+          xvfb-run -a -s '-screen 0 1280x900x24' \
+            go test -count=1 -timeout=45s -run '^TestVerifyChromeHeadedRuntime$' \
+            -json ./internal/checkout | tee "$RUNNER_TEMP/chromium-runtime-results.jsonl"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          events = [json.loads(line) for line in
+                    (Path(os.environ['RUNNER_TEMP']) / 'chromium-runtime-results.jsonl').read_text().splitlines()]
+          completed = [event for event in events
+                       if event.get('Test') == 'TestVerifyChromeHeadedRuntime'
+                       and event.get('Action') in ('pass', 'fail', 'skip')]
+          if len(completed) != 1 or completed[0]['Action'] != 'pass':
+              raise SystemExit('FULL_CHROMIUM_RUNTIME_TEST_DID_NOT_PASS')
+          print('FULL_CHROMIUM_HEADED_RUNTIME_PASSED')
+          PY
