@@ -20,15 +20,21 @@
 
 [offline-validation.yml](../.github/workflows/offline-validation.yml) 中独立的 `chromium-headed-runtime` job：
 
-1. 在 `ubuntu-24.04` runner 安装项目固定的 Playwright 1.61.0。
-2. 安装官方完整浏览器和系统依赖，使用 `--no-shell`，不复用 headless shell 的通过记录。
-3. 从同一版本 Playwright 取得实际完整浏览器路径，检查文件可执行。
+1. 在 `ubuntu-24.04` runner 检查镜像原有的正式 `google-chrome-stable` 包、Xvfb 及发行版 Chrome AppArmor 配置。
+2. 使用包原有的 `/opt/google/chrome/chrome`，记录实际版本；不移动下载的浏览器、不增加权限规则。
+3. 检查该文件可执行、不是符号链接、由 root 持有且不可被组或其他用户写入。浏览器进程本身仍由非 root 运行。
 4. 以非 root 身份、独立 Xvfb display 调用实际 Go 启动检查；不增加 `--no-sandbox` 或修改宿主策略。
 5. 测试内部预算 40 秒，Go 测试总预算 45 秒。检查 JSON 事件中这个精确测试名确实通过；未匹配、skip 或失败都不能得到成功。
 
 普通本地没有设置浏览器路径时，该集成测试明确 skip。CI 设置 `KWMEMBERSHIP_REQUIRE_CHROME_RUNTIME_TESTS=1`，缺失配置必须失败。配置路径后，root、缺 DISPLAY、路径不是绝对可执行文件均失败。
 
 测试的真实结论以对应提交的 Actions run 为准。仅新增 workflow 或编译测试文件不能算启动验收成功；若正常 sandbox 启动失败，应记录原始原因，而不是移除安全条件取得绿色结果。
+
+首次 [run 43405913872](https://github.com/7yedeng/kwMembership/actions/runs/43405913872) 在提交 `a7055f10b86360f224403d58e31ab418111f3296` 使用 Playwright 1.61.0 下载的完整浏览器，安装与路径解析成功，但生产启动测试实际失败，stderr 为 `No usable sandbox`。同一 run 的 Go fixtures 和 59 项 Python 测试通过，不能用这两个结果覆盖完整浏览器失败。
+
+[Chromium 官方说明](https://chromium.googlesource.com/chromium/src/+/main/docs/security/apparmor-userns-restrictions.md) 区分开发/下载构建与正式 Chrome 安装：Ubuntu 自带适用于 `/opt/google/chrome/chrome` 的策略。后续 job 因此验证 runner 原有正式浏览器及其系统集成，不修改 AppArmor/sysctl，不以下载构建覆盖允许路径，也不关闭浏览器 sandbox。这是不同发行安装方式的明确兼容验收。
+
+该 Go 启动 job 使用 runner 的正式 Chrome 版本，**不声称它是 Playwright 1.61.0 绑定的浏览器版本**。原 `python-browser` job 继续用固定 1.61.0 的官方 headless shell 验证 Python/DOM，两种运行路径分别记录。
 
 在满足条件的 Linux 测试主机，可显式运行：
 

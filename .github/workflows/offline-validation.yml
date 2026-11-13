@@ -90,23 +90,28 @@ jobs:
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.12'
-      - name: Install the pinned browser distribution
+      - name: Inspect the vendor-installed full Chrome runtime
         run: |
-          python -m pip install --disable-pip-version-check -r python_executor/requirements.txt
-          python -m playwright install --with-deps --no-shell chromium
-      - name: Resolve the full browser executable
+          command -v Xvfb
+          command -v xvfb-run
+          dpkg-query -W -f='${Status}\n' google-chrome-stable
+          dpkg-query -S /opt/google/chrome/chrome
+          test -f /etc/apparmor.d/chrome
+          /opt/google/chrome/chrome --version
+      - name: Resolve the existing vendor browser executable
         run: |
           python - <<'PY'
           import os
           from pathlib import Path
-          from playwright.sync_api import sync_playwright
 
-          with sync_playwright() as playwright:
-              executable = Path(playwright.chromium.executable_path)
-          if not executable.is_file() or not os.access(executable, os.X_OK):
-              raise SystemExit('FULL_CHROMIUM_EXECUTABLE_MISSING')
-          if '\n' in str(executable) or '\r' in str(executable):
-              raise SystemExit('FULL_CHROMIUM_PATH_INVALID')
+          # Use the original package installation and its existing OS policy.
+          # Never move a downloaded build into this path or change the policy.
+          executable = Path('/opt/google/chrome/chrome')
+          if not executable.is_file() or executable.is_symlink() or not os.access(executable, os.X_OK):
+              raise SystemExit('VENDOR_CHROME_EXECUTABLE_MISSING')
+          metadata = executable.stat()
+          if metadata.st_uid != 0 or metadata.st_mode & 0o022:
+              raise SystemExit('VENDOR_CHROME_OWNERSHIP_INVALID')
           with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as environment:
               environment.write(f'KWMEMBERSHIP_CHROME_RUNTIME_PATH={executable}\n')
           PY

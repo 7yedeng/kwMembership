@@ -9,7 +9,7 @@
 | Go 全量测试 | `go test -count=1 ./...` | 新增 schema-check 命令与包后共 13 个 package，全部通过；使用 Go 1.26.11。 |
 | Python 与填表 JS 本地测试 | `python3 -m unittest discover -s python_executor/tests -v` | 共 59 项：46 项实际通过，13 项真实浏览器测试明确 skip；默认官方 headless shell 未安装。其中 7 项套餐/地区脚本测试执行真实生产常量，全部使用本地合成 fetch/DOM。 |
 | GitHub 浏览器门禁 | `.github/workflows/offline-validation.yml` | 在独立 runner 安装固定版本 Playwright 的官方浏览器；`KWMEMBERSHIP_REQUIRE_BROWSER_TESTS=1`，缺浏览器和任何 skip 都令 job 失败。此行说明门禁，实际成功/失败见 Actions 日志。 |
-| 完整 Chromium / Xvfb 门禁 | `TestVerifyChromeHeadedRuntime` | 独立 job 安装完整浏览器，非 root、正常 sandbox 调用生产 `VerifyChrome`，只访问 about:blank；精确测试名必须产生 pass 事件。普通本地未配置时明确 skip，required 模式缺配置必须失败。真实启动结果见对应 Actions 日志。 |
+| 完整 Chromium / Xvfb 门禁 | `TestVerifyChromeHeadedRuntime` | 独立 job 检查 runner 原有正式 Chrome，非 root、正常 sandbox 调用生产 `VerifyChrome`，只访问 about:blank；精确测试名必须产生 pass 事件。普通本地未配置时明确 skip，required 模式缺配置必须失败。首次下载构建的 sandbox 失败及后续安装方式区别见浏览器运行验收文档，真实启动结果见对应 Actions 日志。 |
 | 补丁空白/冲突标记检查 | `git diff --check` | 通过。 |
 | 研究清单校对 | 对照非测试 Go SQL 引用、预检列表、文档相对链接 | 35 张业务表集合与源码一致；17 项预检标记一致；源码链接有效。 |
 | 相关仓库差异 | 对固定版本的两个 `automation` 目录比较文件集合与 SHA-256 | PPCDK 与 ZovoCard 的该目录均为 12 文件，全部逐字节相同。 |
