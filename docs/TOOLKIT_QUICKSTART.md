@@ -33,12 +33,14 @@ Linux：有桌面时运行 `sh open-prepayment-tool.sh`；服务器可以直接�
 
 完整输入格式见 `docs/PREPAYMENT_TOOL.md`。`your-input.json` 仅代表你自己选择的输入来源；也可由上游程序通过 stdin 直接传入，不必保存凭据文件。
 
-```text
-bin/membership-prepare --check < your-input.json
-bin/membership-prepare --run --chrome-path PATH --show-browser --hold-open 2m < your-input.json
+在解压后的目录中，Windows **CMD** 可运行以下命令；`<` 是 CMD 的输入重定向，不应原样粘贴到 PowerShell。JSON 文件使用 UTF-8、无 BOM。
+
+```bat
+bin\membership-prepare.exe --check < your-input.json
+bin\membership-prepare.exe --run --chrome-path "%ProgramFiles%\Google\Chrome\Application\chrome.exe" --show-browser --hold-open 2m --timeout 3m < your-input.json
 ```
 
-Windows 使用同名 `.exe`。`--check` 默认执行离线格式检查，不开浏览器、不联网。只有显式 `--run` 才执行恢复登录和付款前流程。
+Linux 中使用 `./bin/membership-prepare` 并将 `--chrome-path` 改为实际 Chrome 路径。`--check` 默认执行离线格式检查，不开浏览器、不联网。只有显式 `--run` 才执行恢复登录和付款前流程。
 
 `--show-browser` 选择完整有窗口的 Chrome。在 Linux 私有 Xvfb 显示里运行同一模式可以无人值守，不需要有人盯着窗口。省略该参数是严格 headless；项目尚不能保证目标站点接受该模式。生产 worker 的数据库、锁、资金许可和对账机制仍独立保留，验收 CLI 不替代生产队列。
 

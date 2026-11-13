@@ -35,12 +35,21 @@ func isKnownPaymentConfirmation(rawURL string) bool {
 
 type submissionState struct{ Ready, Blocked, Failed bool }
 
+type fenceAutoAttachment struct {
+	parent   context.Context
+	waiting  bool
+	resuming bool
+	resumed  bool
+}
+
 type fenceTarget struct {
 	ctx          context.Context
+	invalidate   context.CancelFunc
 	iframe       bool
+	installed    bool
 	ready        bool
 	sessionID    target.SessionID
-	autoSessions map[target.SessionID]bool
+	autoSessions map[target.SessionID]*fenceAutoAttachment
 }
 
 type prepaymentFence struct {
@@ -52,10 +61,11 @@ type prepaymentFence struct {
 	signalOnce sync.Once
 	mu         sync.Mutex
 	targets    map[target.ID]*fenceTarget
+	resume     *prepaymentAutoResumeRouter
 }
 
 func newPrepaymentFence() *prepaymentFence {
-	return &prepaymentFence{signal: make(chan struct{}), targets: make(map[target.ID]*fenceTarget)}
+	return &prepaymentFence{signal: make(chan struct{}), targets: make(map[target.ID]*fenceTarget), resume: newPrepaymentAutoResumeRouter()}
 }
 
 func (fence *prepaymentFence) markBlocked() {
@@ -72,7 +82,13 @@ func (driver *chromePrepaymentDriver) SubmissionState() submissionState {
 		return submissionState{Failed: true}
 	}
 	fence := driver.fence
-	return submissionState{Ready: fence.mainReady.Load() && fence.pending.Load() == 0 && !fence.failed.Load(), Blocked: fence.blocked.Load(), Failed: fence.failed.Load()}
+	fence.mu.Lock()
+	childrenReady := true
+	for _, entry := range fence.targets {
+		childrenReady = childrenReady && entry.ready
+	}
+	fence.mu.Unlock()
+	return submissionState{Ready: fence.mainReady.Load() && fence.pending.Load() == 0 && childrenReady && !fence.failed.Load(), Blocked: fence.blocked.Load(), Failed: fence.failed.Load()}
 }
 func (driver *chromePrepaymentDriver) SubmissionSignal() <-chan struct{} { return driver.fence.signal }
 
@@ -84,30 +100,59 @@ func (driver *chromePrepaymentDriver) listenBrowserFence() {
 		case *target.EventTargetDestroyed:
 			driver.fence.removeTarget(value.TargetID)
 		case *target.EventDetachedFromTarget:
-			driver.fence.removeSession(value.SessionID)
+			if driver.fence.removeSession(value.SessionID) && driver.ctx.Err() == nil {
+				driver.fence.markFailed()
+			}
 		}
 	})
 }
 
 func (fence *prepaymentFence) removeTarget(id target.ID) {
 	fence.mu.Lock()
-	delete(fence.targets, id)
+	fence.removeTargetLocked(id)
 	fence.mu.Unlock()
 }
 
-func (fence *prepaymentFence) removeSession(id target.SessionID) {
+func (fence *prepaymentFence) removeTargetLocked(id target.ID) {
+	if entry := fence.targets[id]; entry != nil {
+		// Cancel only the evidence facade, never the chromedp target owner.
+		if entry.invalidate != nil {
+			entry.invalidate()
+		}
+		delete(fence.targets, id)
+	}
+	for childID, entry := range fence.targets {
+		for _, attachment := range entry.autoSessions {
+			if attachment != nil && attachment.parent != nil {
+				parent := chromedp.FromContext(attachment.parent)
+				if parent != nil && parent.Target != nil && parent.Target.TargetID == id {
+					fence.removeTargetLocked(childID)
+					break
+				}
+			}
+		}
+	}
+}
+
+// Losing a manual protection session is an unknown-coverage failure. Detaching
+// an automatic lifetime session only invalidates evidence: the manual Fetch
+// interceptor remains alive until its owning browser closes it.
+func (fence *prepaymentFence) removeSession(id target.SessionID) bool {
 	if id == "" {
-		return
+		return false
 	}
 	fence.mu.Lock()
 	defer fence.mu.Unlock()
+	manualLost := false
 	for key, entry := range fence.targets {
-		if entry.sessionID == id || entry.autoSessions[id] {
+		if entry.sessionID == id || entry.autoSessions[id] != nil {
+			manualLost = manualLost || entry.sessionID == id
 			// Context cancellation would CloseTarget. Leave lifetime ownership
 			// with the parent, but never reuse this detached renderer's facts.
-			delete(fence.targets, key)
+			fence.removeTargetLocked(key)
 		}
 	}
+	return manualLost
 }
 
 func (driver *chromePrepaymentDriver) listenFence(ctx context.Context) {
@@ -138,21 +183,26 @@ func (driver *chromePrepaymentDriver) listenFence(ctx context.Context) {
 				}
 			}()
 		case *target.EventAttachedToTarget:
-			if value.TargetInfo == nil {
+			if value.TargetInfo == nil || value.TargetInfo.TargetID == "" || value.SessionID == "" {
+				driver.fence.markFailed()
 				return
 			}
 			switch value.TargetInfo.Type {
 			case "iframe", "worker", "service_worker", "shared_worker":
-				driver.attachPrepaymentTarget(value.TargetInfo.TargetID, value.TargetInfo.Type, value.SessionID)
+				driver.attachPrepaymentTarget(ctx, value.TargetInfo.TargetID, value.TargetInfo.Type, value.SessionID, value.WaitingForDebugger)
 			default:
 				// An unexpected related target cannot be called protected.
 				driver.fence.markFailed()
 				return
 			}
 		case *target.EventDetachedFromTarget:
-			driver.fence.removeSession(value.SessionID)
+			if driver.fence.removeSession(value.SessionID) && ctx.Err() == nil && driver.ctx.Err() == nil {
+				driver.fence.markFailed()
+			}
 		case *target.EventTargetDestroyed:
 			driver.fence.removeTarget(value.TargetID)
+		case *target.EventReceivedMessageFromTarget:
+			driver.fence.resume.Handle(value.SessionID, value.Message)
 		}
 	})
 }
@@ -165,7 +215,10 @@ func (driver *chromePrepaymentDriver) installFence(ctx context.Context) error {
 			return err
 		}),
 		fetch.Enable().WithPatterns([]*fetch.RequestPattern{{URLPattern: "*", RequestStage: fetch.RequestStageRequest}}),
-		target.SetAutoAttach(true, true).WithFlatten(true),
+		// Keep only the automatic lifetime channel non-flat so its original
+		// wait-for-debugger session can be explicitly resumed after protection.
+		// Field inspection still uses chromedp's separate flat owned session.
+		target.SetAutoAttach(true, true).WithFlatten(false),
 		chromedp.Evaluate(prepaymentFormFenceJS, nil),
 	)
 }
@@ -176,18 +229,27 @@ func (driver *chromePrepaymentDriver) installWorkerFence(ctx context.Context) er
 	// Unsupported Fetch fails closed without disabling or replacing the worker.
 	return chromedp.Run(ctx,
 		fetch.Enable().WithPatterns([]*fetch.RequestPattern{{URLPattern: "*", RequestStage: fetch.RequestStageRequest}}),
+		// Worker targets implement the auto-attach-only Target domain. Protect
+		// nested workers recursively; a rejected command is not full coverage.
+		target.SetAutoAttach(true, true).WithFlatten(false),
 	)
 }
 
-func (driver *chromePrepaymentDriver) attachPrepaymentTarget(id target.ID, kind string, autoSession target.SessionID) {
+func (driver *chromePrepaymentDriver) attachPrepaymentTarget(parent context.Context, id target.ID, kind string, autoSession target.SessionID, waiting bool) {
 	fence := driver.fence
 	fence.mu.Lock()
 	if existing, exists := fence.targets[id]; exists {
-		existing.autoSessions[autoSession] = true
+		if existing.autoSessions[autoSession] == nil {
+			existing.autoSessions[autoSession] = &fenceAutoAttachment{parent: parent, waiting: waiting}
+		}
+		existing.ready = fenceTargetReady(existing)
 		fence.mu.Unlock()
+		driver.resumeAutoAttachments(id, existing)
 		return
 	}
-	entry := &fenceTarget{iframe: kind == "iframe", autoSessions: map[target.SessionID]bool{autoSession: true}}
+	entry := &fenceTarget{iframe: kind == "iframe", autoSessions: map[target.SessionID]*fenceAutoAttachment{
+		autoSession: {parent: parent, waiting: waiting},
+	}}
 	fence.targets[id] = entry
 	fence.pending.Add(1)
 	fence.mu.Unlock()
@@ -219,18 +281,68 @@ func (driver *chromePrepaymentDriver) attachPrepaymentTarget(id target.ID, kind 
 		fence.mu.Lock()
 		exists := fence.targets[id] == entry
 		if exists {
-			entry.ctx = child
-			entry.ready = true
+			entry.ctx, entry.invalidate = context.WithCancel(child)
+			entry.installed = true
 			entry.sessionID = chromedp.FromContext(child).Target.SessionID
+			entry.ready = fenceTargetReady(entry)
 		}
 		fence.mu.Unlock()
 		if !exists {
 			return
 		}
-		if err := chromedp.Run(child, cdpruntime.RunIfWaitingForDebugger()); err != nil && driver.ctx.Err() == nil {
-			fence.markFailed()
-		}
+		driver.resumeAutoAttachments(id, entry)
 	}()
+}
+
+func fenceTargetReady(entry *fenceTarget) bool {
+	if entry == nil || !entry.installed {
+		return false
+	}
+	for _, attachment := range entry.autoSessions {
+		if attachment == nil || attachment.waiting && !attachment.resumed {
+			return false
+		}
+	}
+	return true
+}
+
+func (driver *chromePrepaymentDriver) resumeAutoAttachments(id target.ID, entry *fenceTarget) {
+	fence := driver.fence
+	type pendingResume struct {
+		id         target.SessionID
+		attachment *fenceAutoAttachment
+	}
+	var work []pendingResume
+	fence.mu.Lock()
+	if fence.targets[id] != entry || !entry.installed {
+		fence.mu.Unlock()
+		return
+	}
+	for sessionID, attachment := range entry.autoSessions {
+		if attachment.waiting && !attachment.resumed && !attachment.resuming {
+			attachment.resuming = true
+			fence.pending.Add(1)
+			work = append(work, pendingResume{sessionID, attachment})
+		}
+	}
+	entry.ready = fenceTargetReady(entry)
+	fence.mu.Unlock()
+	for _, next := range work {
+		go func() {
+			defer fence.pending.Add(-1)
+			err := fence.resume.Resume(driver.ctx, next.attachment.parent, next.id)
+			fence.mu.Lock()
+			stillOwned := fence.targets[id] == entry
+			if stillOwned && err == nil {
+				next.attachment.resumed = true
+				entry.ready = fenceTargetReady(entry)
+			}
+			fence.mu.Unlock()
+			if stillOwned && err != nil && driver.ctx.Err() == nil {
+				fence.markFailed()
+			}
+		}()
+	}
 }
 
 func newPrepaymentTargetContext(parent context.Context, id target.ID) (context.Context, error) {

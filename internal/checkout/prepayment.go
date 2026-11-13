@@ -255,6 +255,20 @@ func runPrepayment(parent context.Context, request PrepaymentRequest, timeout ti
 	if initialFence.Failed || !initialFence.Ready {
 		return report, prepaymentFail("PREPAYMENT_FENCE_UNAVAILABLE")
 	}
+	// A paused iframe can otherwise leave Navigate waiting for the whole task
+	// deadline after its bounded protection/resume setup has already failed.
+	// Interrupt the active operation promptly; the deferred fence assessment
+	// preserves the specific blocked/unavailable code and owns browser cleanup.
+	stopFenceWatch := make(chan struct{})
+	defer close(stopFenceWatch)
+	go func() {
+		select {
+		case <-driver.SubmissionSignal():
+			cancelOperation()
+		case <-stopFenceWatch:
+		case <-ctx.Done():
+		}
+	}()
 	stage("restoring_session")
 	login, loginErr := driver.Restore(operation, prepared)
 	report.CookieReadbackVerified, report.IdentityMatch = login.CookieReadbackVerified, login.IdentityMatch

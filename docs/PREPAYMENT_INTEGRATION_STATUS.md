@@ -57,7 +57,7 @@ Go 的真实 SKU、资格判断和结账契约尚未获得可靠现场证据，�
 
 1. 用户反馈：旧本机 Session 工具在两个自己的账号上登录成功。
 2. 本轮本地单元/契约测试：会话借用、输入约束、卡绑定、未知资金结果、报价更新、字段回读和取消等。
-3. GitHub Actions：完整 Chrome/Xvfb 的本地 fixture，三次新 profile 验证新的 Go 付款前编排；Cookie 写入与读回独立测试。严格要求相关 runtime 测试真正执行，缺环境不能跳过冒充通过。
+3. GitHub Actions：完整 Chrome/Xvfb 的本地 fixture，为新的 Go 付款前编排设置六轮独立 profile：普通字段、格式化卡号、拆分有效期，以及字段被重置、表单自行提交、iframe 自行发确认请求三种拒绝场景；Cookie 写入与读回另行测试。严格要求相关 runtime 测试真正执行，缺环境不能跳过冒充通过。是否通过以对应源码提交的 checks 为准。
 4. 未完成的现场验收：真实 Plus 入口、当前真实表单、真实 Zovo 账户和同卡资料、真实最终报价、真实卡的可用性。没有真实付款或续费变更。
 
 最新测试结果和源码提交以 [开发 PR](https://github.com/7yedeng/kwMembership/pull/2) 的 checks 和说明为准；源码存在、合成测试通过和真实链路验收是三种不同证据。

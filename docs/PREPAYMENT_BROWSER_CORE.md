@@ -40,7 +40,7 @@
 
 重复但不同的同类金额、同时出现不同套餐/币种、正在计算的税、隐藏行和无法辨认的标签都不会生成 ready。若真实页面不显示折扣行且没有明确“无折扣”说明，本版会阻断；这是一项真实适配缺口，不能靠在网页上加零值标签消除。
 
-稳定观察需要连续相同快照；账单填入后仍有缺项则继续等待到页面超时。报价复核使用 `ReviewQuote`，不以浮点数比较钱，不将卡余额的 USD 与页面 PHP 数额直接比较。
+稳定观察需要连续相同快照；中途读取错误会清除连续性，不能在超时后沿用旧报价。账单填入后仍有缺项则继续等待到页面超时；只能返回最新读取成功的缺项报告，完整但没有稳定下来的快照不能通过。报价复核使用 `ReviewQuote`，不以浮点数比较钱，不将卡余额的 USD 与页面 PHP 数额直接比较。
 
 Stripe 官方 Custom Checkout Session 文档给出了 `currency`、`total`、`subtotal`、`discount`、税额及税状态等结构；但 Hosted Checkout 页面不保证把该对象公开到全局，本版没有假装能取得它。官方 WebMCP 需要运行时发现当前工具及 schema，也不是所有付款页都有；本版未调用任何 WebMCP 付款或表单工具。[官方 Session 对象文档](https://docs.stripe.com/js/custom_checkout/session_object)；[官方 WebMCP 文档](https://docs.stripe.com/agentic-commerce/agents/webmcp)。
 
@@ -48,7 +48,7 @@ Stripe 官方 Custom Checkout Session 文档给出了 `currency`、`total`、`su
 
 主页面允许来源保持为 `chatgpt.com` / `pay.openai.com`，支付字段 frame 另外允许 `js.stripe.com`。每个 frame 的真实来源由该 renderer 内读取。其他 iframe 即使有相同卡字段名字也不接收材料。
 
-`prepayment_frames.go` 将 FrameID 与拥有它的长期 Target context 一起保存。主 renderer 引用远程 frame 但不能执行时，必须由属于当前页面的已附加 iframe Target 补齐；没有完整证据就重试或失败。操作派生的短 context 只取消这次读取，不调用 child 的 CloseTarget。不会遍历或接管用户其他浏览器/标签页，也不关闭 site isolation 来让测试通过。目标 detach/destroy 后的 registry 记录失效，不再供新观察复用。
+`prepayment_frames.go` 将 FrameID 与拥有它的长期 Target context 一起保存。主 renderer 引用远程 frame 但不能执行时，必须由属于当前页面的已附加 iframe Target 补齐；没有完整证据就重试或失败。操作派生的短 context 只取消这次读取，不调用 child 的 CloseTarget。不会遍历或接管用户其他浏览器/标签页，也不关闭 site isolation 来让测试通过。目标 detach/destroy 后不仅删除 registry，还取消该 target 及其后代的**证据 context**；已返回给调用方的旧 frame 事实也立即失效。此取消不关闭原 chromedp target，原请求监听仍遵循拥有者的生命周期。
 
 字段填写复用已有受限选择器与原生 value setter，发送正常 input/change 事件以触发表单计算。回读比较归一化后的卡号、有效期、CVV 和账单值，并检查字段 validity；最后两次核验不发送 input/change。`readOnly` 分支不会把页面清掉的值重新填回后再声称验收成功。
 
@@ -57,7 +57,9 @@ Stripe 官方 Custom Checkout Session 文档给出了 `currency`、`total`、`su
 - 在页面和已拥有的 iframe 内阻止原生 form submit/requestSubmit 与捕获阶段 submit 事件。尝试通过 CDP Runtime binding 报告给 Go，权威状态保留在 Go 中。
 - 在主 Target、已附加 iframe 和支持 Fetch 域的已附加 worker 内使用 CDP Fetch 拦截已知资金确认路由，包括 `payment_intents/.../confirm`、`setup_intents/.../confirm`、`payment_pages/.../confirm`、`checkout-api/confirm` 等。输入处理器自动发起这些请求也会被阻断。普通税额计算和结账初始化没有被误列为资金确认。
 
-新附加 renderer 先安装各自防护再恢复；worker 没有 Page/form 域，单独只安装请求防护。无法建立防护、未知关联 target 类型或未完成的附加过程不能出具 ready。实现不禁用站点 worker、不改网站权限策略，也不绕过验证码或 3DS。
+新附加 renderer 先安装各自防护再恢复。自动生命周期通道保持非 flat 形式，记录它的原始 SessionID 和父 Target，通过公开 CDP `Target.sendMessageToTarget` 发送唯一固定的 `Runtime.runIfWaitingForDebugger` 命令，等待该原始 session 的确认。发送与确认共用不超过 5 秒的期限，失败会中断正在等待的导航并清理浏览器，不再空等整个任务超时。字段操作继续走 chromedp 的独立 flat session；不能误把第二个 session 的恢复命令当成原始暂停已解除。每个后来附加且正在等待的自动 session 都单独完成同一确认流程。
+
+worker 没有 Page/form 域，单独安装请求防护，并用标准 auto-attach 递归保护嵌套 worker。当前 Chrome 不支持相关命令时明确停止，不把部分覆盖称作完整防护。无法建立防护、未知关联 target 类型、未完成附加或仍未确认恢复的会话不能出具 ready。实现不禁用站点 worker、不改网站权限策略，也不绕过验证码或 3DS。worker 的运行兼容性需要独立真实浏览器用例，不能从 iframe 用例推断其已验收。
 
 这不是对任意私有商户 API 的穷尽证明。准确保证是：**没有主动点击/提交路径，并阻断已知资金确认端点与原生表单提交**。未知端点、站点未来变更或不支持的浏览器行为仍需显式适配与验收，不能把 `submissionFenceVerified` 解读成“网络绝无任何副作用”。
 

@@ -7,6 +7,8 @@ import (
 
 	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
+
+	"kwmembership/internal/sessionrestore"
 )
 
 func TestPrepaymentKnownConfirmationRoutesAreBlockedWithoutReadingBody(t *testing.T) {
@@ -35,6 +37,34 @@ func TestPrepaymentKnownConfirmationRoutesAreBlockedWithoutReadingBody(t *testin
 	}
 }
 
+type prepaymentPausedNavigationFake struct{ *prepaymentFake }
+
+func (fake *prepaymentPausedNavigationFake) OpenPlus(ctx context.Context, identity sessionrestore.Identity) error {
+	if err := fake.prepaymentFake.OpenPlus(ctx, identity); err != nil {
+		return err
+	}
+	fake.fenceState = submissionState{Failed: true}
+	close(fake.fenceSignal)
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func TestPrepaymentFenceFailureInterruptsPausedNavigationBeforeGlobalTimeout(t *testing.T) {
+	request, fake := prepaymentFixture(t)
+	fake.fenceSignal = make(chan struct{})
+	driver := &prepaymentPausedNavigationFake{prepaymentFake: fake}
+	started := time.Now()
+	report, err := runPrepayment(context.Background(), request, 5*time.Second, func(context.Context) (prepaymentDriver, error) {
+		return driver, nil
+	})
+	if err == nil || report.Code != "PREPAYMENT_FENCE_UNAVAILABLE" || !report.BrowserClosed || report.ReadyForConfirmation {
+		t.Fatalf("failed protection did not stop navigation: %v %+v", err, report)
+	}
+	if time.Since(started) > time.Second {
+		t.Fatal("paused navigation waited for the global timeout")
+	}
+}
+
 func TestPrepaymentChildContextInheritsExistingBrowserWithoutAllocationOptions(t *testing.T) {
 	parent, cancel := chromedp.NewContext(context.Background())
 	defer cancel()
@@ -60,18 +90,22 @@ func TestPrepaymentFenceDropsOnlyOwnedDetachedSessions(t *testing.T) {
 	fence := newPrepaymentFence()
 	owner, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	fence.targets["iframe-one"] = &fenceTarget{ctx: owner, ready: true, iframe: true, sessionID: "manual-one", autoSessions: map[target.SessionID]bool{"auto-one": true}}
-	fence.targets["worker-two"] = &fenceTarget{ctx: owner, ready: true, sessionID: "manual-two", autoSessions: map[target.SessionID]bool{"auto-two": true}}
+	frameEvidence, invalidateFrame := context.WithCancel(owner)
+	workerEvidence, invalidateWorker := context.WithCancel(owner)
+	fence.targets["iframe-one"] = &fenceTarget{ctx: frameEvidence, invalidate: invalidateFrame, ready: true, iframe: true, sessionID: "manual-one", autoSessions: map[target.SessionID]*fenceAutoAttachment{"auto-one": {}}}
+	fence.targets["worker-two"] = &fenceTarget{ctx: workerEvidence, invalidate: invalidateWorker, ready: true, sessionID: "manual-two", autoSessions: map[target.SessionID]*fenceAutoAttachment{"auto-two": {}}}
 	fence.removeSession("unrelated-session")
 	if len(fence.targets) != 2 {
 		t.Fatal("unrelated session changed owned targets")
 	}
 	fence.removeSession("auto-one")
-	if len(fence.targets) != 1 || fence.targets["iframe-one"] != nil || owner.Err() != nil {
+	if len(fence.targets) != 1 || fence.targets["iframe-one"] != nil || owner.Err() != nil || frameEvidence.Err() == nil {
 		t.Fatal("detached frame retained evidence or closed owner")
 	}
-	fence.removeSession("manual-two")
-	if len(fence.targets) != 0 || owner.Err() != nil {
+	if !fence.removeSession("manual-two") {
+		t.Fatal("lost protection session was not distinguished")
+	}
+	if len(fence.targets) != 0 || owner.Err() != nil || workerEvidence.Err() == nil {
 		t.Fatal("detached worker retained evidence or closed owner")
 	}
 }
@@ -79,12 +113,49 @@ func TestPrepaymentFenceDropsOnlyOwnedDetachedSessions(t *testing.T) {
 func TestPrepaymentFenceDestroyedTargetCannotSupplyFrameContext(t *testing.T) {
 	fence := newPrepaymentFence()
 	owner := context.Background()
-	fence.targets["gone"] = &fenceTarget{ctx: owner, ready: true, iframe: true}
+	evidence, invalidate := context.WithCancel(owner)
+	fence.targets["gone"] = &fenceTarget{ctx: evidence, invalidate: invalidate, ready: true, iframe: true}
 	fence.targets["worker"] = &fenceTarget{ctx: owner, ready: true}
 	fence.removeTarget("gone")
+	if evidence.Err() == nil || owner.Err() != nil {
+		t.Fatal("destroyed target facts remained live or owner was cancelled")
+	}
 	driver := &chromePrepaymentDriver{ctx: owner, fence: fence}
 	if contexts := driver.frameContexts(); len(contexts) != 1 || contexts[0] != owner {
 		t.Fatal("destroyed or worker target leaked into frame routing")
+	}
+}
+
+func TestPrepaymentTargetCannotBeReadyBeforeEveryOriginalPauseIsResumed(t *testing.T) {
+	entry := &fenceTarget{installed: true, autoSessions: map[target.SessionID]*fenceAutoAttachment{
+		"flat-not-paused": {waiting: false},
+		"original-one":    {waiting: true, resumed: true},
+		"original-two":    {waiting: true},
+	}}
+	if fenceTargetReady(entry) {
+		t.Fatal("a second paused session was skipped")
+	}
+	entry.autoSessions["original-two"].resumed = true
+	if !fenceTargetReady(entry) {
+		t.Fatal("completed original sessions remained unready")
+	}
+	entry.installed = false
+	if fenceTargetReady(entry) {
+		t.Fatal("resume alone replaced protection installation")
+	}
+}
+
+func TestPrepaymentFenceReadinessIncludesEveryOwnedTarget(t *testing.T) {
+	fence := newPrepaymentFence()
+	fence.mainReady.Store(true)
+	fence.targets["pending"] = &fenceTarget{installed: true}
+	driver := &chromePrepaymentDriver{ctx: context.Background(), fence: fence}
+	if driver.SubmissionState().Ready {
+		t.Fatal("zero pending counter concealed unready original session")
+	}
+	fence.targets["pending"].ready = true
+	if !driver.SubmissionState().Ready {
+		t.Fatal("all confirmed protections did not become ready")
 	}
 }
 
