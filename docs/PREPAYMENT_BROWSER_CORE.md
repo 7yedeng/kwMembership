@@ -57,7 +57,11 @@ Stripe 官方 Custom Checkout Session 文档给出了 `currency`、`total`、`su
 - 在页面和已拥有的 iframe 内阻止原生 form submit/requestSubmit 与捕获阶段 submit 事件。尝试通过 CDP Runtime binding 报告给 Go，权威状态保留在 Go 中。
 - 在主 Target、已附加 iframe 和支持 Fetch 域的已附加 worker 内使用 CDP Fetch 拦截已知资金确认路由，包括 `payment_intents/.../confirm`、`setup_intents/.../confirm`、`payment_pages/.../confirm`、`checkout-api/confirm` 等。输入处理器自动发起这些请求也会被阻断。普通税额计算和结账初始化没有被误列为资金确认。
 
-新附加 renderer 先安装各自防护再恢复。自动生命周期通道保持非 flat 形式，记录它的原始 SessionID 和父 Target，通过公开 CDP `Target.sendMessageToTarget` 发送唯一固定的 `Runtime.runIfWaitingForDebugger` 命令，等待该原始 session 的确认。发送与确认共用不超过 5 秒的期限，失败会中断正在等待的导航并清理浏览器，不再空等整个任务超时。字段操作继续走 chromedp 的独立 flat session；不能误把第二个 session 的恢复命令当成原始暂停已解除。每个后来附加且正在等待的自动 session 都单独完成同一确认流程。
+新附加 renderer 先在**原始 non-flat session** 上完成 Runtime/Page 启用、固定绑定、新文档 form 防护、Fetch 与递归 auto-attach，再恢复该原始 session。暂停的新 iframe 可能尚无默认 JavaScript 执行上下文，所以这段 bootstrap 不执行 `Runtime.evaluate`，也不先调用 chromedp 的手动 target 初始化。所有命令使用公开 CDP `Target.sendMessageToTarget`，受闭合方法/参数列表限制；每条发送与确认不超过 5 秒，bootstrap 自身也有总期限。
+
+原 session 恢复之后，用固定只读布尔表达式等待当前文档可用，再初始化 chromedp 的独立 flat 字段执行 context。这个字段连接的额外 auto-attach 被关闭；**持续 Fetch 和子 session 事件仍由原始受保护通道处理**，不依赖一个只等待命令响应的临时监听器。嵌套消息按真实父 route 递归分派，防止在父 Target 上错误响应子 Target 的请求。每个后来附加的原始 session 都单独完成保护与恢复，不能把第二个手动 session 的恢复命令当成原始暂停已解除。
+
+bootstrap、恢复或手动初始化失败会中断主操作并清理浏览器。手动初始化采用持久的派生 execution context；它在成功后继续存活，在 target 失效或 5 秒启动期限内取消时只终止该执行上下文，不调用 chromedp owner 的 CloseTarget。因此既不会留下挂起命令等到全局超时，也不会把单次读取的取消变成关闭存活 iframe。
 
 worker 没有 Page/form 域，单独安装请求防护，并用标准 auto-attach 递归保护嵌套 worker。当前 Chrome 不支持相关命令时明确停止，不把部分覆盖称作完整防护。无法建立防护、未知关联 target 类型、未完成附加或仍未确认恢复的会话不能出具 ready。实现不禁用站点 worker、不改网站权限策略，也不绕过验证码或 3DS。worker 的运行兼容性需要独立真实浏览器用例，不能从 iframe 用例推断其已验收。
 

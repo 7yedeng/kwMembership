@@ -2,12 +2,14 @@ package checkout
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/chromedp/cdproto"
+	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
 
@@ -37,6 +39,73 @@ func TestPrepaymentKnownConfirmationRoutesAreBlockedWithoutReadingBody(t *testin
 		if isKnownPaymentConfirmation(url) {
 			t.Fatal("read/quote request was classified as confirmation")
 		}
+	}
+}
+
+type prepaymentBootstrapExecutor struct {
+	methods     []string
+	failMethod  string
+	evaluations int
+}
+
+func (executor *prepaymentBootstrapExecutor) Execute(_ context.Context, method string, _, result any) error {
+	executor.methods = append(executor.methods, method)
+	if method == executor.failMethod {
+		return &cdproto.Error{Code: -32000, Message: "synthetic unavailable capability"}
+	}
+	response := `{}`
+	if method == "Page.addScriptToEvaluateOnNewDocument" {
+		response = `{"identifier":"fixture-script"}`
+	}
+	if method == "Runtime.evaluate" {
+		executor.evaluations++
+		if executor.evaluations == 2 {
+			return &cdproto.Error{Code: -32000, Message: "Cannot find default execution context"}
+		}
+		if executor.evaluations < 3 {
+			response = `{"result":{"type":"boolean","value":false}}`
+		} else {
+			response = `{"result":{"type":"boolean","value":true}}`
+		}
+	}
+	if result != nil {
+		return json.Unmarshal([]byte(response), result)
+	}
+	return nil
+}
+
+func TestPrepaymentPausedBootstrapNeedsNoDefaultContextOrBrowserInitializer(t *testing.T) {
+	for _, iframe := range []bool{true, false} {
+		executor := &prepaymentBootstrapExecutor{}
+		ctx := cdp.WithExecutor(context.Background(), executor)
+		if err := installPrepaymentAutoFence(ctx, iframe, true); err != nil {
+			t.Fatal(err)
+		}
+		want := "Runtime.enable,Fetch.enable,Target.setAutoAttach"
+		if iframe {
+			want = "Runtime.enable,Page.enable,Runtime.addBinding,Page.addScriptToEvaluateOnNewDocument,Fetch.enable,Target.setAutoAttach"
+		}
+		if strings.Join(executor.methods, ",") != want || executor.evaluations != 0 {
+			t.Fatalf("paused bootstrap evaluated or resumed before protection: %v", executor.methods)
+		}
+	}
+}
+
+func TestPrepaymentBootstrapFailureCannotResumeTheOriginalSession(t *testing.T) {
+	executor := &prepaymentBootstrapExecutor{failMethod: "Fetch.enable"}
+	err := installPrepaymentAutoFence(cdp.WithExecutor(context.Background(), executor), true, true)
+	if err == nil || strings.Contains(strings.Join(executor.methods, ","), "runIfWaitingForDebugger") {
+		t.Fatal("failed original protection reached resume")
+	}
+}
+
+func TestPrepaymentFrameContextReadinessIsFreshProtocolEvidence(t *testing.T) {
+	executor := &prepaymentBootstrapExecutor{}
+	if err := waitPrepaymentFrameContext(cdp.WithExecutor(context.Background(), executor)); err != nil {
+		t.Fatal(err)
+	}
+	if executor.evaluations != 3 || strings.Join(executor.methods, ",") != "Runtime.evaluate,Runtime.evaluate,Runtime.evaluate" {
+		t.Fatal("frame readiness skipped fresh observations after a context error")
 	}
 }
 
@@ -173,9 +242,9 @@ func TestPrepaymentFenceDestroyedTargetCannotSupplyFrameContext(t *testing.T) {
 
 func TestPrepaymentTargetCannotBeReadyBeforeEveryOriginalPauseIsResumed(t *testing.T) {
 	entry := &fenceTarget{installed: true, autoSessions: map[target.SessionID]*fenceAutoAttachment{
-		"flat-not-paused": {waiting: false},
-		"original-one":    {waiting: true, resumed: true},
-		"original-two":    {waiting: true},
+		"flat-not-paused": {waiting: false, installed: true, resumed: true},
+		"original-one":    {waiting: true, installed: true, resumed: true},
+		"original-two":    {waiting: true, installed: true},
 	}}
 	if fenceTargetReady(entry) {
 		t.Fatal("a second paused session was skipped")
@@ -201,6 +270,16 @@ func TestPrepaymentFenceReadinessIncludesEveryOwnedTarget(t *testing.T) {
 	fence.targets["pending"].ready = true
 	if !driver.SubmissionState().Ready {
 		t.Fatal("all confirmed protections did not become ready")
+	}
+}
+
+func TestPrepaymentOriginalDetachDuringBootstrapStillLosesProtection(t *testing.T) {
+	fence := newPrepaymentFence()
+	fence.targets["installing"] = &fenceTarget{autoSessions: map[target.SessionID]*fenceAutoAttachment{
+		"original-session": {waiting: true},
+	}}
+	if !fence.removeSession("original-session") {
+		t.Fatal("bootstrap detach erased an unprotected active target without failing")
 	}
 }
 

@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/chromedp/cdproto/storage"
-	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
 
 	"kwmembership/internal/sessionrestore"
@@ -295,15 +294,6 @@ document.addEventListener('input',e=>{if(variant===1&&e.target.name==='number')e
 					diagnosticMu.Unlock()
 				}
 				native.fence.mu.Unlock()
-				// This sender wrapper exists only in the synthetic test and
-				// reports fixed categories, never raw protocol text or IDs.
-				native.fence.resume.sender = func(ctx context.Context, sessionID target.SessionID, message string) error {
-					err := sendPrepaymentAutoResume(ctx, sessionID, message)
-					if err != nil {
-						native.fence.note("original_session_send", err)
-					}
-					return err
-				}
 				var count int
 				if err := chromedp.Run(native.ctx, chromedp.ActionFunc(func(target context.Context) error {
 					cookies, err := storage.GetCookies().Do(target)

@@ -64,6 +64,7 @@ func (c *ChromeExecutor) newPrepaymentDriver(parent context.Context) (prepayment
 	browser, cancelBrowser := chromedp.NewContext(allocator,
 		chromedp.WithLogf(quiet), chromedp.WithErrorf(quiet), chromedp.WithDebugf(quiet))
 	driver := &chromePrepaymentDriver{owner: c, ctx: browser, cancelBrowser: cancelBrowser, cancelAllocator: cancelAllocator, profile: profile, fence: newPrepaymentFence()}
+	driver.fence.protocol = newPrepaymentAutoProtocol(driver.handleFenceEvent)
 	// First Run must use the browser lifetime, not a short-lived operation
 	// context, or chromedp would kill the process when that operation ends.
 	timer := time.AfterFunc(c.timeout, cancelBrowser)
