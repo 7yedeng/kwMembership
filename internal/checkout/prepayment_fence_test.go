@@ -2,9 +2,12 @@ package checkout
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/chromedp/cdproto"
 	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
 
@@ -33,6 +36,48 @@ func TestPrepaymentKnownConfirmationRoutesAreBlockedWithoutReadingBody(t *testin
 	} {
 		if isKnownPaymentConfirmation(url) {
 			t.Fatal("read/quote request was classified as confirmation")
+		}
+	}
+}
+
+func TestPrepaymentProfileRemovalRetriesOnlyTheOwnedRemovalAndStaysBounded(t *testing.T) {
+	for _, succeedsAt := range []int{3, 0} {
+		calls, pauses := 0, 0
+		failure := errors.New("synthetic temporary handle")
+		err := retryPrepaymentProfileRemoval(func() error {
+			calls++
+			if calls == succeedsAt {
+				return nil
+			}
+			return failure
+		}, func(duration time.Duration) {
+			if duration != 100*time.Millisecond {
+				t.Fatal("cleanup retry delay changed unexpectedly")
+			}
+			pauses++
+		})
+		if succeedsAt > 0 && (err != nil || calls != succeedsAt || pauses != succeedsAt-1) {
+			t.Fatal("transient profile handles were not retried")
+		}
+		if succeedsAt == 0 && (!errors.Is(err, failure) || calls != 30 || pauses != 29) {
+			t.Fatal("persistent deletion failure was hidden or unbounded")
+		}
+	}
+}
+
+func TestPrepaymentFixtureDiagnosticsNeverReturnRawProtocolText(t *testing.T) {
+	for _, entry := range []struct {
+		err            error
+		code           int64
+		classification string
+	}{
+		{&cdproto.Error{Code: -32000, Message: "Cannot find default execution context; synthetic-private-material"}, -32000, "execution_context_unavailable"},
+		{&cdproto.Error{Code: -32601, Message: "synthetic-private-method"}, -32601, "unsupported_method"},
+		{errors.New("synthetic-private-material"), 0, "other_error"},
+	} {
+		code, classification := classifyPrepaymentDiagnostic(entry.err)
+		if code != entry.code || classification != entry.classification || strings.Contains(classification, "synthetic") {
+			t.Fatal("unbounded protocol diagnostic")
 		}
 	}
 }

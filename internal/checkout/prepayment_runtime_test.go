@@ -9,11 +9,13 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/chromedp/cdproto/storage"
+	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
 
 	"kwmembership/internal/sessionrestore"
@@ -188,6 +190,7 @@ func TestPrepaymentChromeRuntimeLocal(t *testing.T) {
 		t.Fatal("prepayment runtime requires non-root full Chrome and an isolated display")
 	}
 	var checkoutCreates atomic.Int32
+	var selectedCycles atomic.Int32
 	var unexpected atomic.Int32
 	var mainServer, cardServer, foreignServer *httptest.Server
 	var variant atomic.Int32
@@ -265,9 +268,19 @@ document.addEventListener('input',e=>{if(variant===1&&e.target.name==='number')e
 	for cycle := 0; cycle <= 5; cycle++ {
 		variant.Store(int32(cycle))
 		t.Run(fmt.Sprintf("fresh_profile_%d", cycle), func(t *testing.T) {
+			selectedCycles.Add(1)
 			request, _ := prepaymentFixture(t)
 			request.Material.Billing.PostalCode = "10001"
 			var driver *fixturePrepaymentChrome
+			var diagnosticMu sync.Mutex
+			var diagnostics []string
+			t.Cleanup(func() {
+				diagnosticMu.Lock()
+				defer diagnosticMu.Unlock()
+				for _, diagnostic := range diagnostics {
+					t.Log(diagnostic)
+				}
+			})
 			executor := NewChromeExecutorWithLogging(path, "http://127.0.0.1:1", true, 35*time.Second, 0, ChromeLogging{})
 			factory := func(ctx context.Context) (prepaymentDriver, error) {
 				owned, err := executor.newPrepaymentDriver(ctx)
@@ -275,6 +288,22 @@ document.addEventListener('input',e=>{if(variant===1&&e.target.name==='number')e
 					return nil, err
 				}
 				native := owned.(*chromePrepaymentDriver)
+				native.fence.mu.Lock()
+				native.fence.diagnostic = func(phase string, code int64, classification string) {
+					diagnosticMu.Lock()
+					diagnostics = append(diagnostics, fmt.Sprintf("loopback fence: phase=%s code=%d class=%s", phase, code, classification))
+					diagnosticMu.Unlock()
+				}
+				native.fence.mu.Unlock()
+				// This sender wrapper exists only in the synthetic test and
+				// reports fixed categories, never raw protocol text or IDs.
+				native.fence.resume.sender = func(ctx context.Context, sessionID target.SessionID, message string) error {
+					err := sendPrepaymentAutoResume(ctx, sessionID, message)
+					if err != nil {
+						native.fence.note("original_session_send", err)
+					}
+					return err
+				}
 				var count int
 				if err := chromedp.Run(native.ctx, chromedp.ActionFunc(func(target context.Context) error {
 					cookies, err := storage.GetCookies().Do(target)
@@ -309,7 +338,7 @@ document.addEventListener('input',e=>{if(variant===1&&e.target.name==='number')e
 			}
 		})
 	}
-	if checkoutCreates.Load() != 6 || unexpected.Load() != 0 {
+	if checkoutCreates.Load() != selectedCycles.Load() || unexpected.Load() != 0 {
 		t.Fatalf("fixture requests: checkout=%d unexpected=%d", checkoutCreates.Load(), unexpected.Load())
 	}
 }

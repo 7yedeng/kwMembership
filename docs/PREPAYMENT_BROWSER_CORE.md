@@ -21,7 +21,7 @@
 7. 材料中的账单必须与先前账单逐字段一致。填写可信 frame 中的卡与账单字段，然后重新读取报价；即使新价格仍在预算内，只要与账单完成后的基准报价不同也停止。
 8. 两次最终检查均只读字段，不重新填写。要求字段精确回读通过、报价不变、最终控制唯一且启用。出现“下一步/继续”等进展控制时返回 `PREPAYMENT_PROGRESSION_REQUIRED`；本入口没有 durable permit，因此不会点击越过它。
 9. `OnReady` 输出脱敏观察结果。可选 `HoldOpen` 最长 5 分钟，期间没有付款确认指令；检测到已知提交尝试立即撤销 ready。正常等待结束后再次读取报价和字段。
-10. 成功、取消和失败都关闭拥有的浏览器并删除临时 profile；删除失败不能保留成功结果。
+10. 成功、取消和失败都关闭拥有的浏览器并删除临时 profile。Windows 退出后仍可能短暂持有文件句柄，程序仅对本任务创建的临时目录进行有界删除重试，固定等待总量不超过 2.9 秒；持续删除失败不能保留成功结果，也不会杀掉用户其他 Chrome 或修改权限。
 
 直接传入 `Material` 的调用方提前持有全部材料，但代码仍按“账单→报价→卡字段”的次序发送。外部 resolver 可在第一次只读卡查询中缓存同一卡记录，两阶段调用不得换卡。卡号、CVV、Session、凭据及 checkout 长链不进入报告、错误文本或常规日志。
 
@@ -84,3 +84,5 @@ go test -count=1 -timeout=240s -run '^TestPrepaymentChromeRuntimeLocal$' ./inter
 ```
 
 Linux 需要非 root 与私有 DISPLAY；Windows 不要求 DISPLAY，使用普通安装的 Chrome 和独立临时 profile。未显式配置浏览器时该可选测试会跳过；设置 REQUIRE 后缺少浏览器会失败。测试不依赖真实 Session、真实卡或外部站点。是否在某一操作系统通过，以该次 CI/本机运行记录为准，不能用编译成功代替真实浏览器运行。
+
+定位已知故障时可用 `-run '^TestPrepaymentChromeRuntimeLocal/fresh_profile_0$'` 只跑一个全新 profile；正式验收仍需全部六轮。窄诊断接收器只由这个 loopback 测试安装，输出固定阶段、数值错误码与固定分类；生产没有该接收器，也不会打开 Cookie、Session、请求体、原始 CDP 消息或 checkout URL 日志。

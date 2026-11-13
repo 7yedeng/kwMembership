@@ -377,11 +377,33 @@ func (driver *chromePrepaymentDriver) Close() error {
 	driver.once.Do(func() {
 		driver.cancelBrowser()
 		driver.cancelAllocator()
-		if err := os.RemoveAll(driver.profile); err != nil {
+		if err := retryPrepaymentProfileRemoval(func() error {
+			err := os.RemoveAll(driver.profile)
+			if err != nil {
+				driver.fence.note("cleanup_retry", err)
+			}
+			return err
+		}, time.Sleep); err != nil {
 			driver.closeErr = prepaymentFail("PREPAYMENT_CLEANUP_FAILED")
 		}
 	})
 	return driver.closeErr
+}
+
+// Windows may briefly retain utility-process file handles after the owned
+// browser has exited. Retry only this task's own temporary profile, with a
+// fixed 2.9-second wait bound; a persistent failure still revokes success.
+func retryPrepaymentProfileRemoval(remove func() error, pause func(time.Duration)) error {
+	var err error
+	for attempt := 0; attempt < 30; attempt++ {
+		if err = remove(); err == nil {
+			return nil
+		}
+		if attempt < 29 {
+			pause(100 * time.Millisecond)
+		}
+	}
+	return err
 }
 
 var _ PrepaymentExecutor = (*ChromeExecutor)(nil)

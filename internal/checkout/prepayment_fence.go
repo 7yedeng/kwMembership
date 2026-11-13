@@ -2,12 +2,15 @@ package checkout
 
 import (
 	"context"
+	"errors"
 	"net/url"
 	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 
+	"github.com/chromedp/cdproto"
 	"github.com/chromedp/cdproto/fetch"
 	"github.com/chromedp/cdproto/network"
 	cdppage "github.com/chromedp/cdproto/page"
@@ -62,6 +65,8 @@ type prepaymentFence struct {
 	mu         sync.Mutex
 	targets    map[target.ID]*fenceTarget
 	resume     *prepaymentAutoResumeRouter
+	// Populated only by loopback _test.go fixtures. Production has no sink.
+	diagnostic func(phase string, code int64, classification string)
 }
 
 func newPrepaymentFence() *prepaymentFence {
@@ -72,9 +77,69 @@ func (fence *prepaymentFence) markBlocked() {
 	fence.blocked.Store(true)
 	fence.signalOnce.Do(func() { close(fence.signal) })
 }
-func (fence *prepaymentFence) markFailed() {
+func (fence *prepaymentFence) markFailed(phase string, err error) {
+	fence.note(phase, err)
 	fence.failed.Store(true)
 	fence.signalOnce.Do(func() { close(fence.signal) })
+}
+
+func (fence *prepaymentFence) note(phase string, err error) {
+	fence.mu.Lock()
+	sink := fence.diagnostic
+	fence.mu.Unlock()
+	if sink != nil {
+		code, classification := classifyPrepaymentDiagnostic(err)
+		sink(phase, code, classification)
+	}
+}
+
+func classifyPrepaymentDiagnostic(err error) (int64, string) {
+	if err == nil {
+		return 0, "none"
+	}
+	if errors.Is(err, context.Canceled) {
+		return 0, "cancelled"
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return 0, "deadline"
+	}
+	var protocol *cdproto.Error
+	var system syscall.Errno
+	var code int64
+	if errors.As(err, &protocol) {
+		code = protocol.Code
+	} else if errors.As(err, &system) {
+		code = int64(system)
+	}
+	// Inspect text only to select bounded categories. Never return raw text,
+	// path, URL, request body, SessionID, or any caller material.
+	message := strings.ToLower(err.Error())
+	for _, known := range []struct{ fragment, classification string }{
+		{"execution context", "execution_context_unavailable"},
+		{"context with specified id", "execution_context_unavailable"},
+		{"flat protocol", "flat_routing_rejected"},
+		{"no session", "session_unavailable"},
+		{"session with given id", "session_unavailable"},
+		{"no such target", "target_unavailable"},
+		{"target closed", "target_closed"},
+		{"already handled", "request_already_handled"},
+		{"interceptionid", "interception_unavailable"},
+		{"used by another process", "profile_busy"},
+		{"sharing violation", "profile_busy"},
+		{"access is denied", "permission_denied"},
+		{"permission denied", "permission_denied"},
+	} {
+		if strings.Contains(message, known.fragment) {
+			return code, known.classification
+		}
+	}
+	if code == -32601 {
+		return code, "unsupported_method"
+	}
+	if protocol != nil {
+		return code, "protocol_error"
+	}
+	return code, "other_error"
 }
 
 func (driver *chromePrepaymentDriver) SubmissionState() submissionState {
@@ -101,7 +166,7 @@ func (driver *chromePrepaymentDriver) listenBrowserFence() {
 			driver.fence.removeTarget(value.TargetID)
 		case *target.EventDetachedFromTarget:
 			if driver.fence.removeSession(value.SessionID) && driver.ctx.Err() == nil {
-				driver.fence.markFailed()
+				driver.fence.markFailed("browser_manual_detached", nil)
 			}
 		}
 	})
@@ -164,7 +229,7 @@ func (driver *chromePrepaymentDriver) listenFence(ctx context.Context) {
 			}
 		case *fetch.EventRequestPaused:
 			if value.Request == nil {
-				driver.fence.markFailed()
+				driver.fence.markFailed("fetch_request_missing", nil)
 				return
 			}
 			blocked := isKnownPaymentConfirmation(value.Request.URL)
@@ -179,12 +244,12 @@ func (driver *chromePrepaymentDriver) listenFence(ctx context.Context) {
 					return fetch.ContinueRequest(value.RequestID).Do(target)
 				}))
 				if err != nil && ctx.Err() == nil && driver.ctx.Err() == nil {
-					driver.fence.markFailed()
+					driver.fence.markFailed("fetch_response", err)
 				}
 			}()
 		case *target.EventAttachedToTarget:
 			if value.TargetInfo == nil || value.TargetInfo.TargetID == "" || value.SessionID == "" {
-				driver.fence.markFailed()
+				driver.fence.markFailed("attachment_invalid", nil)
 				return
 			}
 			switch value.TargetInfo.Type {
@@ -192,12 +257,12 @@ func (driver *chromePrepaymentDriver) listenFence(ctx context.Context) {
 				driver.attachPrepaymentTarget(ctx, value.TargetInfo.TargetID, value.TargetInfo.Type, value.SessionID, value.WaitingForDebugger)
 			default:
 				// An unexpected related target cannot be called protected.
-				driver.fence.markFailed()
+				driver.fence.markFailed("attachment_unsupported", nil)
 				return
 			}
 		case *target.EventDetachedFromTarget:
 			if driver.fence.removeSession(value.SessionID) && ctx.Err() == nil && driver.ctx.Err() == nil {
-				driver.fence.markFailed()
+				driver.fence.markFailed("target_manual_detached", nil)
 			}
 		case *target.EventTargetDestroyed:
 			driver.fence.removeTarget(value.TargetID)
@@ -255,12 +320,14 @@ func (driver *chromePrepaymentDriver) attachPrepaymentTarget(parent context.Cont
 	fence.mu.Unlock()
 	go func() {
 		defer fence.pending.Add(-1)
+		fence.note("child_context_start", nil)
 		child, err := newPrepaymentTargetContext(driver.ctx, id)
 		if err != nil {
-			fence.markFailed()
+			fence.markFailed("child_context", err)
 			return
 		}
 		driver.listenFence(child)
+		fence.note("child_install_start", nil)
 		// Auto-attachment paused this renderer. Install its own interception and
 		// document hooks before resuming it; no site-isolation flags are changed.
 		var installErr error
@@ -270,14 +337,16 @@ func (driver *chromePrepaymentDriver) attachPrepaymentTarget(parent context.Cont
 			installErr = driver.installWorkerFence(child)
 		}
 		if installErr != nil {
+			fence.note("child_install_result", installErr)
 			fence.mu.Lock()
 			stillOwned := fence.targets[id] == entry
 			fence.mu.Unlock()
 			if stillOwned && driver.ctx.Err() == nil {
-				fence.markFailed()
+				fence.markFailed("child_install", installErr)
 			}
 			return
 		}
+		fence.note("child_install_complete", nil)
 		fence.mu.Lock()
 		exists := fence.targets[id] == entry
 		if exists {
@@ -330,6 +399,7 @@ func (driver *chromePrepaymentDriver) resumeAutoAttachments(id target.ID, entry 
 	for _, next := range work {
 		go func() {
 			defer fence.pending.Add(-1)
+			fence.note("original_session_resume_start", nil)
 			err := fence.resume.Resume(driver.ctx, next.attachment.parent, next.id)
 			fence.mu.Lock()
 			stillOwned := fence.targets[id] == entry
@@ -339,7 +409,7 @@ func (driver *chromePrepaymentDriver) resumeAutoAttachments(id target.ID, entry 
 			}
 			fence.mu.Unlock()
 			if stillOwned && err != nil && driver.ctx.Err() == nil {
-				fence.markFailed()
+				fence.markFailed("original_session_resume", err)
 			}
 		}()
 	}
