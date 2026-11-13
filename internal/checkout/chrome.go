@@ -230,25 +230,21 @@ func validateRequest(request Request) error {
 		request.Mode != ModeSessionCheckout && request.Mode != ModeCheckout && request.Mode != ModeUpgrade {
 		return failure("CHECKOUT_REQUEST_INVALID", "checkout mode is invalid")
 	}
-	if request.Stage != "plus" && request.Stage != "upgrade" {
-		return failure("CHECKOUT_REQUEST_INVALID", "checkout stage is invalid")
-	}
-	if !map[string]bool{"plus": true, "x5": true, "x20": true}[request.TargetTier] {
-		return failure("CHECKOUT_REQUEST_INVALID", "target membership tier is invalid")
-	}
-	contract := request.PriceContract
-	if contract.ID == "" || contract.Version < 1 || contract.Currency != "PHP" || contract.MinAmount <= 0 || contract.MaxAmount < contract.MinAmount {
-		return failure("CHECKOUT_REQUEST_INVALID", "checkout price contract is invalid")
+	interactiveGo := request.Mode == ModeInteractivePreflight && request.Stage == "go" && request.TargetTier == "go"
+	if err := ValidatePlanContract(request); err != nil {
+		return err
 	}
 	if request.Mode == ModeInteractivePreflight {
-		if request.Stage != "plus" || request.CheckoutURL != "" || request.PlanURL != "" || len(request.Cookies) != 0 ||
+		if request.Stage != "plus" && !interactiveGo || request.CheckoutURL != "" || request.PlanURL != "" ||
+			len(request.Cookies) != 0 || len(request.Session) != 0 || request.Binding != (ExecutionBinding{}) ||
 			request.Material != nil || request.Guard != nil || request.OnHandoff == nil || normalizeEmail(request.ExpectedEmail) == "" {
 			return failure("CHECKOUT_REQUEST_INVALID", "interactive login preflight request is invalid")
 		}
 		return nil
 	}
 	if request.Mode == ModeSessionPreflight {
-		if request.Stage != "plus" || request.CheckoutURL != "" || request.PlanURL != "" || len(request.Cookies) == 0 ||
+		if request.Stage != "plus" ||
+			request.CheckoutURL != "" || request.PlanURL != "" || len(request.Cookies) == 0 ||
 			request.Material != nil || request.Guard != nil || normalizeEmail(request.ExpectedEmail) == "" {
 			return failure("CHECKOUT_REQUEST_INVALID", "Session preflight request is invalid")
 		}
@@ -451,14 +447,16 @@ func (c *ChromeExecutor) executeInteractivePreflight(ctx context.Context, reques
 			if parseErr == nil {
 				topOrigin := parsed.Scheme + "://" + parsed.Host
 				if topOrigin == "https://chatgpt.com" {
+					// A failed or unauthenticated observation must not retain an
+					// earlier login as current evidence on the account origin.
+					identityVerified = false
 					var identity authenticatedIdentity
 					if err := chromedp.Run(ctx, chromedp.Evaluate(authenticatedEmailJS, &identity, authenticatedIdentityEvalOptions...)); err == nil {
-						if actual := normalizeEmail(identity.Email); actual != "" {
-							if actual != expectedEmail {
-								return Result{}, failure("INTERACTIVE_LOGIN_IDENTITY_MISMATCH", "interactive login identity does not match the order")
-							}
-							identityVerified = true
+						verified, identityErr := interactiveIdentityVerified(identity, expectedEmail)
+						if identityErr != nil {
+							return Result{}, identityErr
 						}
+						identityVerified = verified
 					}
 				}
 				if topOrigin == "https://chatgpt.com" || topOrigin == "https://pay.openai.com" {
@@ -479,6 +477,20 @@ func (c *ChromeExecutor) executeInteractivePreflight(ctx context.Context, reques
 		}
 	}
 	return Result{}, failure("INTERACTIVE_LOGIN_TIMEOUT", "interactive login did not reach a supported checkout page")
+}
+
+func interactiveIdentityVerified(identity authenticatedIdentity, expectedEmail string) (bool, error) {
+	if identity.ErrorKind != "" {
+		return false, failure("INTERACTIVE_LOGIN_IDENTITY_UNVERIFIED", "interactive login has an authentication error")
+	}
+	actual := normalizeEmail(identity.Email)
+	if actual == "" {
+		return false, nil
+	}
+	if actual != normalizeEmail(expectedEmail) {
+		return false, failure("INTERACTIVE_LOGIN_IDENTITY_MISMATCH", "interactive login identity does not match the order")
+	}
+	return true, nil
 }
 
 func decimal(value string) bool {
@@ -958,7 +970,12 @@ func classify(page inspectedPage, request Request, purpose string) string {
 		return "PAYMENT_ACTION_REQUIRED"
 	}
 	expectedPlan := "plus"
-	if request.Stage == "upgrade" {
+	if request.Stage == "go" {
+		if request.Mode != ModeInteractivePreflight || request.TargetTier != "go" || request.PriceContract.Tier != "go" || purpose != "checkout" {
+			return "UNKNOWN_PAYMENT_STATE"
+		}
+		expectedPlan = "go"
+	} else if request.Stage == "upgrade" {
 		expectedPlan = map[string]string{"x5": "prolite", "x20": "pro"}[request.TargetTier]
 	}
 	base := page.Plan == expectedPlan && page.Country == "PH" && page.Currency == "PHP" && page.DisplayedAmount != nil &&

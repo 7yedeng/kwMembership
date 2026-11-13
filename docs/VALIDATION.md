@@ -6,14 +6,14 @@
 
 | 验证 | 命令 | 结果 |
 | --- | --- | --- |
-| Go 全量测试 | `go test -count=1 ./...` | 11 个 package 全部通过；使用 Go 1.26.11。 |
-| Python 与填表 JS 本地测试 | `python3 -m unittest discover -s python_executor/tests -v` | 共 52 项：39 项实际通过，13 项真实浏览器测试明确 skip；默认官方 headless shell 未安装。16 项 Node DOM 模拟测试分别执行 Go/Python 两套生产填表 JS 并比较。 |
+| Go 全量测试 | `go test -count=1 ./...` | 新增 schema-check 命令与包后共 13 个 package，全部通过；使用 Go 1.26.11。 |
+| Python 与填表 JS 本地测试 | `python3 -m unittest discover -s python_executor/tests -v` | 共 58 项：45 项实际通过，13 项真实浏览器测试明确 skip；默认官方 headless shell 未安装。新增 6 项套餐脚本测试执行真实生产常量，全部使用本地合成 fetch/DOM。 |
 | GitHub 浏览器门禁 | `.github/workflows/offline-validation.yml` | 在独立 runner 安装固定版本 Playwright 的官方浏览器；`KWMEMBERSHIP_REQUIRE_BROWSER_TESTS=1`，缺浏览器和任何 skip 都令 job 失败。此行说明门禁，实际成功/失败见 Actions 日志。 |
 | 补丁空白/冲突标记检查 | `git diff --check` | 通过。 |
 | 研究清单校对 | 对照非测试 Go SQL 引用、预检列表、文档相对链接 | 35 张业务表集合与源码一致；17 项预检标记一致；源码链接有效。 |
 | 相关仓库差异 | 对固定版本的两个 `automation` 目录比较文件集合与 SHA-256 | PPCDK 与 ZovoCard 的该目录均为 12 文件，全部逐字节相同。 |
 
-Go package 范围：`cmd/membership-worker`、`cmd/membership-preflight`、`internal/preflight`、`internal/checkout`、`internal/config`、`internal/domain`、`internal/executor`、`internal/processor`、`internal/provider`、`internal/secure`、`internal/store`。
+Go package 范围：`cmd/membership-worker`、`cmd/membership-preflight`、`cmd/membership-schema-check`、`internal/preflight`、`internal/schemacheck`、`internal/checkout`、`internal/config`、`internal/domain`、`internal/executor`、`internal/processor`、`internal/provider`、`internal/secure`、`internal/store`。
 
 首批提交的 Python 结果为 32 项通过、0 skip；加入真正的浏览器 suite 后不能继续沿用这个数字。当前本地 `OK (skipped=13)` 不表示真实浏览器测试已通过。
 
@@ -43,6 +43,28 @@ Go package 范围：`cmd/membership-worker`、`cmd/membership-preflight`、`inte
 - stdin 等待读取支持 context 取消，SIGINT/SIGTERM 不因等待输入 EOF 而挂住。测试使用 pipe 和合成材料。
 
 代码：[main_test.go](../cmd/membership-preflight/main_test.go)、[preflight_test.go](../internal/preflight/preflight_test.go)。完整输入与模式说明：[STANDALONE_CONTRACT.md](STANDALONE_CONTRACT.md)。
+
+### Go 套餐与执行入口隔离
+
+- Go 仅进入无凭据、无卡材料、无 Guard/Binding 的交互预检；Session CLI 会在构造浏览器前拒绝 Go。
+- 明确的 Go 与 Plus 页面事实不能互相满足目标；金额必须为有限正数，且在契约区间内。
+- Go 浏览器与 Python bridge 入口均按当前阶段核对价格契约，Go 契约不能伪装成 Plus 付款命令。x5/x20 订单先经过 Plus 阶段的原有语义保留。
+- 交互身份响应含刷新错误时拒绝；账号来源上新观察失败会清除旧身份确认。
+- Node VM 直接执行 Go/Python 两份 Plus 准备脚本：活跃 go/Go/GO 合成订阅的 POST 数为 0；合成免费账号对照仍只请求原 Plus SKU。
+- Go 页面检查脚本只识别明确属性，未知或缺失值不会根据正文、标题或 URL 猜套餐。这不是线上 Go 页面适配证据。
+
+代码：[go_preflight_test.go](../internal/checkout/go_preflight_test.go)、[Go 预检测试](../internal/preflight/go_test.go)、[bridge 套餐测试](../internal/executor/plan_contract_test.go)、[test_plan_scripts.py](../python_executor/tests/test_plan_scripts.py)。
+
+### 只读数据库契约检查
+
+- 覆盖 35 张声明表、383 个声明列条目、6 个明确 UPSERT 唯一键 target；生产必需列与仅测试出现的列分开。
+- 不存在文件不创建，空文件不初始化；只有 35 个表名而没有所需列的数据库不能通过。
+- 只读层拒绝写入，检查前后文件字节、mtime、权限和目录项保持一致；WAL/SHM/journal 文件保留原样并拒绝检查。
+- 不读取业务行，不输出输入路径、原始默认值、Session 或任意数据库标识；未知正式约束不误报为生产就绪。
+- 部分/表达式/超集唯一索引、旧全局卡 ID 唯一键冲突、lease 类型与默认值不兼容均有回归用例。
+- 复审后增加大写 lease 列名、非 SQLite 数值语法默认字符串、生产写入列被生成列替代的回归；314 个明确写入列的证据与类型来源独立声明，只读派生列不误报不可写。
+
+完整证据与限制：[SCHEMA_CHECK.md](SCHEMA_CHECK.md)。
 
 ### 卡台连接
 

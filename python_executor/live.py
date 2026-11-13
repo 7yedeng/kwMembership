@@ -221,7 +221,7 @@ async () => {
         const subscription = await subscriptionResponse.json();
         const plan = typeof subscription?.plan_type === 'string' ? subscription.plan_type.toLowerCase() : '';
         const activeUntil = Date.parse(typeof subscription?.active_until === 'string' ? subscription.active_until : '');
-        if (['plus','prolite','pro','team','business','enterprise'].includes(plan) && Number.isFinite(activeUntil) && activeUntil > Date.now() && subscription?.is_delinquent !== true) return result({errorKind:'already_subscribed'});
+        if (['go','plus','prolite','pro','team','business','enterprise'].includes(plan) && Number.isFinite(activeUntil) && activeUntil > Date.now() && subscription?.is_delinquent !== true) return result({errorKind:'already_subscribed'});
       }
     }
     const response = await fetch('/backend-api/payments/checkout', {method:'POST', credentials:'include', cache:'no-store', redirect:'error', signal:controller.signal, headers:{...headers,'content-type':'application/json'}, body:JSON.stringify({billing_details:{country:'PH',currency:'PHP'},checkout_ui_mode:'hosted',entry_point:'all_plans_pricing_modal',plan_name:'chatgptplusplan'})});

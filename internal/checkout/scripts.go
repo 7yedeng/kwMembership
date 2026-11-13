@@ -59,7 +59,7 @@ const preparePlusCheckoutJS = `(async () => {
           ? subscription.plan_type.toLowerCase() : '';
         const activeUntil = Date.parse(typeof subscription?.active_until === 'string'
           ? subscription.active_until : '');
-        const paidPlan = ['plus', 'prolite', 'pro', 'team', 'business', 'enterprise'].includes(plan);
+        const paidPlan = ['go', 'plus', 'prolite', 'pro', 'team', 'business', 'enterprise'].includes(plan);
         if (paidPlan && Number.isFinite(activeUntil) && activeUntil > Date.now()
             && subscription?.is_delinquent !== true) {
           return result({errorKind:'already_subscribed'});
@@ -147,7 +147,7 @@ const inspectFrameJS = `(() => {
   return {
     origin,
     routeTemplate: route,
-    plan: ['plus', 'prolite', 'pro'].includes(planRaw) ? planRaw : null,
+    plan: ['go', 'plus', 'prolite', 'pro'].includes(planRaw) ? planRaw : null,
     country: countryRaw === 'PH' ? 'PH' : null,
     currency: currencyRaw === 'PHP' ? 'PHP' : null,
     displayedAmount: Number.isFinite(amount) && amount > 0 ? amount : null,

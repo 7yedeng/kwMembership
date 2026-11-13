@@ -6,7 +6,7 @@
 
 最小纵向范围有两种入口。已有 Session 的使用者可以从标准输入提供 Session 和显式价格契约，先本地校验，再在隔离 Chrome 中验证实际邮箱、创建 Plus checkout 会话、读取页面事实并输出脱敏结果。没有可用 Session cookie 的使用者可以显式选择 `--interactive-preflight`，仅提供预期邮箱和价格契约，在新开的独立浏览器中亲自登录并进入 checkout，然后读取同样的页面事实。
 
-这两条路径直接使用 `checkout.ChromeExecutor.Execute` 的 `ModeSessionPreflight` 或 `ModeInteractivePreflight`。它们需要 **0 张业务表**，不需要 kwRedeem checkout、API 地址、卡台凭据、续费 token、账单服务、数据库中的订单、Python bridge 或共享 worker。输入请求始终固定 `Stage=plus`、`TargetTier=plus`、`Material=nil`、`Guard=nil`。Session 入口的 `OnHandoff=nil`；交互入口只装入输出固定状态码的 handoff，并且 `Session`、`Cookies` 都为空。执行器不会进入付款材料填写、progression、submit 或升级执行分支。
+这两条路径直接使用 `checkout.ChromeExecutor.Execute` 的 `ModeSessionPreflight` 或 `ModeInteractivePreflight`。它们需要 **0 张业务表**，不需要 kwRedeem checkout、API 地址、卡台凭据、续费 token、账单服务、数据库中的订单、Python bridge 或共享 worker。Session 入口固定 `Stage=plus`、`TargetTier=plus`；交互入口允许 Plus 或 Go，并要求 stage、target 和价格契约 tier 一致。两者始终 `Material=nil`、`Guard=nil`。Session 入口的 `OnHandoff=nil`；交互入口只装入输出固定状态码的 handoff，并且 `Session`、`Cookies` 都为空。执行器不会进入付款材料填写、progression、submit 或升级执行分支。Go 的限制与证据范围见 [GO_PLAN_PREFLIGHT.md](GO_PLAN_PREFLIGHT.md)。
 
 `--run` 不是纯只读网络操作：现有执行器会读取 `/api/auth/session`，可能查询 subscription，然后向 `/backend-api/payments/checkout` 发出 POST 创建 checkout 会话。它不创建卡、不充值卡、不取消续费、不提交付款，也不以一次预检代替最终到账证据。站点拒绝访问、要求验证或结构不识别时应停止，不能改变访问路径绕过环境限制。
 

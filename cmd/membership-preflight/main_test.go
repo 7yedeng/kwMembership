@@ -107,6 +107,19 @@ func TestRunConfigurationFailureDoesNotEchoPath(t *testing.T) {
 	assertSafeOutput(t, stdout.String()+stderr.String())
 }
 
+func TestGoAutomaticCLIStopsBeforeConstructingBrowser(t *testing.T) {
+	input := strings.ReplaceAll(syntheticInput, `"plus"`, `"go"`)
+	for _, arguments := range [][]string{{"--check"}, {"--run"}} {
+		var stdout, stderr bytes.Buffer
+		status := runCLI(context.Background(), arguments, strings.NewReader(input), &stdout, &stderr, noBrowserFactory(t), cliNow)
+		report := decodeReport(t, stdout.String())
+		if status != 2 || report.Code != "PREFLIGHT_TARGET_UNSUPPORTED" || report.RemoteVerified || report.PaymentAllowed {
+			t.Fatal("Go reached automatic Session execution")
+		}
+		assertSafeOutput(t, stdout.String()+stderr.String())
+	}
+}
+
 func TestInteractiveCLIForcesFreshHeadedTokenlessPreflight(t *testing.T) {
 	const metadata = `{"expectedEmail":"buyer@example.invalid","targetTier":"plus","priceContract":{"id":"fixture","version":1,"tier":"plus","currency":"PHP","minAmount":100,"maxAmount":200}}`
 	factory := func(options preflight.BrowserOptions) (checkout.Executor, error) {

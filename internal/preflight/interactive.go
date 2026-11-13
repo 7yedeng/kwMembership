@@ -24,11 +24,10 @@ func DecodeInteractive(reader io.Reader) (Prepared, error) {
 	if err := decodeSingle(raw, &item); err != nil {
 		return Prepared{}, err
 	}
-	request, err := metadataRequest(item.ExpectedEmail, item.TargetTier, item.PriceContract)
+	request, err := metadataRequest(item.ExpectedEmail, item.TargetTier, item.PriceContract, checkout.ModeInteractivePreflight)
 	if err != nil {
 		return Prepared{}, err
 	}
-	request.Mode = checkout.ModeInteractivePreflight
 	return Prepared{validated: true, request: request}, nil
 }
 

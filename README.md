@@ -2,6 +2,8 @@
 
 > **7yedeng 自有付款引擎研究分支（2026-11-13）**：本分支增加独立无付款预检 CLI、按卡绑定的账单资料、账号服务注入和支付执行修复。请先阅读 [自有引擎实现与验收](docs/INDEPENDENT_ENGINE.md)、[独立预检与数据库契约](docs/STANDALONE_CONTRACT.md)、[账号与浏览器测试顺序](docs/ACCOUNT_BROWSER_RUNBOOK.md) 和 [验证记录](docs/VALIDATION.md)。当前默认 worker 仍采用下文的 kwRedeem 配套方式；本分支尚不构成脱离配套系统即可实际付款的成品。
 
+新增：[Go 套餐非付款预检与 PHP 计费边界](docs/GO_PLAN_PREFLIGHT.md)、[只读 worker 数据库契约检查](docs/SCHEMA_CHECK.md)、[服务器会话隔离与 IPC 审计](docs/SERVER_ISOLATION_AND_IPC.md)。Go 仅开放手动进入页面后的观察路径；默认 worker 的 Go 自动付款尚未实现。
+
 独立的 Go 会员自动化 worker。代码与 kwRedeem 分开维护，但直接读取和写入 kwRedeem 的 SQLite/WAL 数据库，不创建第二套会员数据库。
 
 Go worker 负责：

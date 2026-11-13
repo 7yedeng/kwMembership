@@ -166,7 +166,7 @@ func Decode(reader io.Reader, now time.Time) (Prepared, error) {
 	if err := decodeSingle(raw, &item); err != nil {
 		return Prepared{}, err
 	}
-	request, err := metadataRequest(item.ExpectedEmail, item.TargetTier, item.PriceContract)
+	request, err := metadataRequest(item.ExpectedEmail, item.TargetTier, item.PriceContract, checkout.ModeSessionPreflight)
 	if err != nil {
 		return Prepared{}, err
 	}
@@ -181,16 +181,18 @@ func Decode(reader io.Reader, now time.Time) (Prepared, error) {
 	if browserSession.Email != request.ExpectedEmail {
 		return Prepared{}, fail("CHATGPT_SESSION_IDENTITY_MISMATCH")
 	}
-	request.Mode = checkout.ModeSessionPreflight
 	request.Cookies = browserSession.Cookies
 	return Prepared{validated: true, request: request}, nil
 }
 
-func metadataRequest(email, tier string, contract priceContract) (checkout.Request, error) {
-	if tier != "plus" {
+func metadataRequest(email, tier string, contract priceContract, mode checkout.Mode) (checkout.Request, error) {
+	// The automatic Session path has a reviewed Plus request only. Go may be
+	// observed after user navigation; no unverified Go API SKU is constructed.
+	if mode != checkout.ModeSessionPreflight && mode != checkout.ModeInteractivePreflight ||
+		tier != "plus" && !(mode == checkout.ModeInteractivePreflight && tier == "go") {
 		return checkout.Request{}, fail("PREFLIGHT_TARGET_UNSUPPORTED")
 	}
-	if !contractIDPattern.MatchString(contract.ID) || contract.Version < 1 || contract.Tier != "plus" ||
+	if !contractIDPattern.MatchString(contract.ID) || contract.Version < 1 || contract.Tier != tier ||
 		contract.Currency != "PHP" || math.IsNaN(contract.MinAmount) || math.IsInf(contract.MinAmount, 0) ||
 		math.IsNaN(contract.MaxAmount) || math.IsInf(contract.MaxAmount, 0) ||
 		contract.MinAmount <= 0 || contract.MaxAmount < contract.MinAmount {
@@ -201,9 +203,9 @@ func metadataRequest(email, tier string, contract priceContract) (checkout.Reque
 		return checkout.Request{}, fail("EXPECTED_IDENTITY_MISSING")
 	}
 	return checkout.Request{
-		Stage: "plus", TargetTier: "plus", ExpectedEmail: expected,
+		Mode: mode, Stage: tier, TargetTier: tier, ExpectedEmail: expected,
 		PriceContract: checkout.PriceContract{
-			ID: contract.ID, Version: contract.Version, Tier: "plus", Currency: "PHP",
+			ID: contract.ID, Version: contract.Version, Tier: tier, Currency: "PHP",
 			MinAmount: contract.MinAmount, MaxAmount: contract.MaxAmount,
 		},
 	}, nil
@@ -247,7 +249,8 @@ func execute(ctx context.Context, prepared Prepared, executor checkout.Executor,
 	if (page.StateID != "PAYMENT_PROGRESSION_READY" && page.StateID != "PAYMENT_FINAL_READY") ||
 		(page.Origin != "https://chatgpt.com" && page.Origin != "https://pay.openai.com") ||
 		(page.RouteTemplate != "/checkout" && page.RouteTemplate != "/checkout/{id}" && page.RouteTemplate != "/pay/{id}") ||
-		page.Plan != "plus" || page.Country != "PH" || page.Currency != "PHP" || page.DisplayedAmount == nil ||
+		page.Plan != prepared.request.TargetTier || page.Plan != contract.Tier ||
+		page.Country != "PH" || page.Currency != contract.Currency || page.DisplayedAmount == nil ||
 		math.IsNaN(*page.DisplayedAmount) || math.IsInf(*page.DisplayedAmount, 0) ||
 		*page.DisplayedAmount < contract.MinAmount || *page.DisplayedAmount > contract.MaxAmount {
 		return report, fail("CHECKOUT_UI_UNSUPPORTED")
@@ -257,7 +260,7 @@ func execute(ctx context.Context, prepared Prepared, executor checkout.Executor,
 	report.PreflightPassed = true
 	report.Page = &PageReport{
 		State: page.StateID, Origin: page.Origin, RouteTemplate: page.RouteTemplate,
-		Plan: "plus", Country: "PH", Currency: "PHP", DisplayedAmount: *page.DisplayedAmount,
+		Plan: page.Plan, Country: page.Country, Currency: page.Currency, DisplayedAmount: *page.DisplayedAmount,
 	}
 	return report, nil
 }

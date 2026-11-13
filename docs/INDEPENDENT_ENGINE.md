@@ -130,6 +130,14 @@ worker, err := processor.NewWithServices(
 
 该文档同时列出了 35 张业务表的 383 个列条目，其中 60 个列条目只有生产 SQL 使用证据，没有可复用的 DDL 声明。它不是生产迁移；本轮没有拼接测试表去冒充完整 worker 已可独立运行。
 
+### 3.6 Go 观察与只读数据库检查
+
+交互预检新增 Go 目标，严格核对观察套餐与契约；自动 Session 入口仍拒绝 Go。Go/Python 的 Plus 准备脚本会在明确的活跃 Go 订阅事实下停止。两种执行入口共用当前阶段与价格契约校验，避免 Go 契约进入 Plus 付款命令。真实 Go DOM、内部 SKU、付款和取消仍未验证，见 [GO_PLAN_PREFLIGHT.md](GO_PLAN_PREFLIGHT.md)。
+
+[`membership-schema-check`](../cmd/membership-schema-check/main.go) 现可独立检查已存在的静止 SQLite 快照。它核对嵌入契约中的生产所需列、明确的 UPSERT 唯一键以及已有正式 lease DDL 条件；只读取 schema metadata，拒绝 WAL/SHM/journal sidecar，不创建或迁移数据库。未知生产约束始终保留，`productionReady` 和 `paymentAllowed` 均不会因表名齐全而变成 true。完整用法见 [SCHEMA_CHECK.md](SCHEMA_CHECK.md)。
+
+每次执行的独立 profile 已有实现，但队列仍全局单活跃，代理仍为进程配置；按订单固定路由和真正并发尚未实现。已核验的现状、三次 IPC 复查与所需单库字段设计见 [SERVER_ISOLATION_AND_IPC.md](SERVER_ISOLATION_AND_IPC.md)。
+
 ## 4. “只接卡台”要求卡台提供什么
 
 [`CardPlatform`](../internal/provider/card_platform.go) 已存在，不需要把每个供应商的 API 形状带入工作流。当前主要能力如下：
