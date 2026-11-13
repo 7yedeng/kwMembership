@@ -7,7 +7,31 @@ import (
 	"time"
 
 	"github.com/chromedp/cdproto/network"
+	"github.com/chromedp/chromedp"
 )
+
+func TestUseChromeContextRequiresStartedCallerTarget(t *testing.T) {
+	parent, cancelParent := context.WithCancel(context.Background())
+	defer cancelParent()
+	ctx, cleanup := chromedp.NewContext(parent)
+	defer cleanup()
+	for _, candidate := range []context.Context{nil, context.Background(), ctx} {
+		facade, err := UseChromeContext(candidate)
+		if SafeCode(err) != "SESSION_BROWSER_CONFIG_INVALID" || facade != nil {
+			t.Fatal("an uninitialized context became a session browser", err)
+		}
+	}
+	if ctx.Err() != nil || chromedp.FromContext(ctx).Browser != nil || chromedp.FromContext(ctx).Target != nil {
+		t.Fatal("wrapping a context launched or cancelled a browser")
+	}
+	cancelParent()
+	if _, err := UseChromeContext(ctx); SafeCode(err) != "SESSION_CANCELLED" {
+		t.Fatal("closed owner was accepted", err)
+	}
+	if _, ownsLifecycle := any(&chromeSession{}).(interface{ Close() error }); ownsLifecycle {
+		t.Fatal("borrowed facade exposes lifecycle ownership")
+	}
+}
 
 func TestAllocatorKeepsOwnedContextAfterFirstAction(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())

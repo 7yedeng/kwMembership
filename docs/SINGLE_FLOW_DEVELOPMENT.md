@@ -2,6 +2,8 @@
 
 更新：2026-11-14，北京时间。分支：`feature/modular-single-flow-20261114`。
 
+**最新整合入口：** [Session → Plus 付款前整合状态](PREPAYMENT_INTEGRATION_STATUS.md) 与 [新桌面/CLI工具](PREPAYMENT_TOOL.md)。新增 `membership-prepare` 使用同一浏览器衔接会话、Plus 建单、基础 Zovo 查卡、账单税额核验和填表；以下保留前几轮开发记录，不代表最新接口列表。
+
 后续迭代补充：[本机安装与空白页/粘贴诊断](SESSION_INSTALLATION_AND_DIAGNOSTICS.md)、[付款前三轮重新启动验收](PREPAYMENT_RESTART_ACCEPTANCE.md)、[付款及清算对账验收](PAYMENT_RECONCILIATION_ACCEPTANCE.md)。这些记录保留真实现场、合成浏览器和业务验收的区别；以下早期执行证据不替代最新 PR 的 CI 结果。
 
 ## 用户目标与当前授权

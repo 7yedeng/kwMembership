@@ -128,6 +128,7 @@ func VerifyChrome(ctx context.Context, path, proxyServer string, visible bool) e
 
 type frameFact struct {
 	FrameID         cdp.FrameID       `json:"-"`
+	TargetContext   context.Context   `json:"-"`
 	Origin          string            `json:"origin"`
 	RouteTemplate   string            `json:"routeTemplate"`
 	Plan            string            `json:"plan"`
@@ -140,8 +141,9 @@ type frameFact struct {
 }
 
 type frameFields struct {
-	FrameID cdp.FrameID
-	Fields  map[string]bool
+	FrameID       cdp.FrameID
+	TargetContext context.Context `json:"-"`
+	Fields        map[string]bool
 }
 
 type inspectedPage struct {

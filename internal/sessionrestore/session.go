@@ -73,6 +73,11 @@ type Prepared struct {
 func (Prepared) String() string   { return "[protected session]" }
 func (Prepared) GoString() string { return "[protected session]" }
 
+// Identity returns a value copy of the expected account identity. Callers may
+// bind a task to it, but must not put the direct identity or Session in logs.
+// Cookie material intentionally has no corresponding accessor.
+func (session Prepared) Identity() Identity { return session.identity }
+
 func Parse(raw []byte, now time.Time) (Prepared, error) {
 	if len(raw) > MaxSessionBytes {
 		return Prepared{}, failure("SESSION_INPUT_TOO_LARGE")
@@ -198,11 +203,19 @@ type Observation struct {
 	Email  string
 }
 
-type Browser interface {
+// SessionBrowser is the minimum surface needed to restore and verify a
+// Session. Its caller owns the browser's lifetime; Apply cannot close it.
+type SessionBrowser interface {
 	WriteCookies(context.Context, []provider.SessionCookie) error
 	ReadCookies(context.Context) ([]Cookie, error)
 	Navigate(context.Context) error
 	Observe(context.Context) (Observation, error)
+}
+
+// Browser adds ownership for the standalone acceptance tool. A task that
+// already owns its browser should use SessionBrowser and Apply instead.
+type Browser interface {
+	SessionBrowser
 	Close() error
 }
 
@@ -253,6 +266,77 @@ func verifyIdentity(expected Identity, actual Observation) error {
 	return nil
 }
 
+// Apply restores a prepared Session in a caller-owned browser and verifies the
+// exact Cookie readback and account identity. It neither starts nor closes the
+// browser and does not extend the supplied context. The caller must provide an
+// isolated task browser and owns cancellation, cleanup and any subsequent work.
+// A successful report is login evidence only; it never grants payment access.
+func Apply(ctx context.Context, session Prepared, browser SessionBrowser, progress Progress) (report Report, err error) {
+	report = Inspect(session)
+	report.Operation = "apply"
+	stage := func(value string) {
+		report.Stage = value
+		if progress != nil {
+			progress(value)
+		}
+	}
+	defer func() {
+		if err != nil {
+			report.Code = SafeCode(err)
+		}
+	}()
+	if ctx == nil || browser == nil || len(session.cookies) == 0 || session.identity.Email == "" {
+		return report, failure("SESSION_BROWSER_CONFIG_INVALID")
+	}
+	call := func(code string, fn func() error) error {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		callErr := fn()
+		// A browser adapter may finish an operation while cancellation races
+		// with it. Do not turn such an observation into a successful login.
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if callErr != nil {
+			return failure(code)
+		}
+		return nil
+	}
+	stage("cookie_writing")
+	// A driver's argument handling must not be able to mutate the expected
+	// credential contract used for readback, or a later invocation of Apply.
+	writeCookies := append([]provider.SessionCookie(nil), session.cookies...)
+	if err = call("SESSION_COOKIE_WRITE_FAILED", func() error { return browser.WriteCookies(ctx, writeCookies) }); err != nil {
+		return report, err
+	}
+	stage("cookie_readback")
+	var actual []Cookie
+	if err = call("SESSION_COOKIE_READBACK_FAILED", func() error { var e error; actual, e = browser.ReadCookies(ctx); return e }); err != nil {
+		return report, err
+	}
+	if !cookiesMatch(session.cookies, actual) {
+		return report, failure("SESSION_COOKIE_MISMATCH")
+	}
+	report.CookieReadbackVerified = true
+	stage("navigating")
+	if err = call("SESSION_NAVIGATION_FAILED", func() error { return browser.Navigate(ctx) }); err != nil {
+		return report, err
+	}
+	stage("identity_checking")
+	var observation Observation
+	if err = call("SESSION_IDENTITY_UNAVAILABLE", func() error { var e error; observation, e = browser.Observe(ctx); return e }); err != nil {
+		return report, err
+	}
+	if err = verifyIdentity(session.identity, observation); err != nil {
+		return report, err
+	}
+	report.RemoteVerified, report.IdentityMatch = true, true
+	report.Code = "SESSION_VERIFIED"
+	stage("identity_verified")
+	return report, nil
+}
+
 // Run does not expose credentials to progress or reports. It always closes its
 // own browser; it never attaches to an existing personal profile or worker.
 func Run(parent context.Context, session Prepared, options Options, factory Factory, progress Progress) (report Report, err error) {
@@ -301,46 +385,14 @@ func Run(parent context.Context, session Prepared, options Options, factory Fact
 			}
 		}
 	}()
-	call := func(code string, fn func() error) error {
-		if operation.Err() != nil {
-			return operation.Err()
-		}
-		if callErr := fn(); callErr != nil {
-			if operation.Err() != nil {
-				return operation.Err()
-			}
-			return failure(code)
-		}
-		return nil
-	}
-	stage("cookie_writing")
-	if err = call("SESSION_COOKIE_WRITE_FAILED", func() error { return browser.WriteCookies(operation, session.cookies) }); err != nil {
+	// Apply owns the authentication steps; this wrapper alone owns the
+	// standalone browser and its visibility/cleanup lifecycle.
+	report, err = Apply(operation, session, browser, progress)
+	report.Operation = "restore"
+	report.BrowserOpened = true
+	if err != nil {
 		return report, err
 	}
-	stage("cookie_readback")
-	var actual []Cookie
-	if err = call("SESSION_COOKIE_READBACK_FAILED", func() error { var e error; actual, e = browser.ReadCookies(operation); return e }); err != nil {
-		return report, err
-	}
-	if !cookiesMatch(session.cookies, actual) {
-		return report, failure("SESSION_COOKIE_MISMATCH")
-	}
-	report.CookieReadbackVerified = true
-	stage("navigating")
-	if err = call("SESSION_NAVIGATION_FAILED", func() error { return browser.Navigate(operation) }); err != nil {
-		return report, err
-	}
-	stage("identity_checking")
-	var observation Observation
-	if err = call("SESSION_IDENTITY_UNAVAILABLE", func() error { var e error; observation, e = browser.Observe(operation); return e }); err != nil {
-		return report, err
-	}
-	if err = verifyIdentity(session.identity, observation); err != nil {
-		return report, err
-	}
-	report.RemoteVerified, report.IdentityMatch = true, true
-	report.Code = "SESSION_VERIFIED"
-	stage("identity_verified")
 	if options.HoldOpen > 0 {
 		stage("browser_visible")
 		timer := time.NewTimer(options.HoldOpen)

@@ -13,9 +13,11 @@ import sys
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
-COMMANDS = ("membership-session", "membership-review", "membership-preflight")
+COMMANDS = ("membership-session", "membership-review", "membership-preflight", "membership-prepare")
 TARGETS = {"windows-amd64": ("windows", "amd64"), "linux-amd64": ("linux", "amd64")}
-DOCS = ("SESSION_RESTORE.md", "CHECKOUT_REVIEW.md", "CARD_ADAPTERS.md", "SINGLE_FLOW_DEVELOPMENT.md")
+DOCS = ("SESSION_RESTORE.md", "CHECKOUT_REVIEW.md", "CARD_ADAPTERS.md", "SINGLE_FLOW_DEVELOPMENT.md",
+        "PREPAYMENT_TOOL.md", "PREPAYMENT_BROWSER_CORE.md", "ZOVO_BASIC_CARD_API.md",
+        "PREPAYMENT_INTEGRATION_STATUS.md")
 
 
 def run(arguments: list[str], *, env: dict[str, str] | None = None) -> str:
@@ -72,8 +74,9 @@ def build(target: str, output: Path, go: str) -> Path:
     for command in COMMANDS:
         run([go, "build", "-trimpath", "-buildvcs=false", "-ldflags=-s -w", "-o",
              str(folder / "bin" / (command + suffix)), "./cmd/" + command], env=environment)
-    shutil.copytree(ROOT / "tools" / "session-desktop", folder / "tools" / "session-desktop",
-                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "test_*.py"))
+    for desktop in ("session-desktop", "prepayment-desktop"):
+        shutil.copytree(ROOT / "tools" / desktop, folder / "tools" / desktop,
+                        ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "test_*.py"))
     shutil.copytree(ROOT / "tools" / "userscript", folder / "userscript",
                     ignore=shutil.ignore_patterns("*.zip", "*.test.cjs", "TEST_RESULTS.txt"))
     (folder / "docs").mkdir()
@@ -90,17 +93,27 @@ def build(target: str, output: Path, go: str) -> Path:
         "commands": list(COMMANDS),
         "liveAccountValidated": False,
         "paymentEntryIncluded": False,
+        "prepaymentEntryIncluded": True,
+        "cardFundingExecutionIncluded": False,
+        "liveCheckoutValidated": False,
     }
     (folder / "SOURCE.json").write_text(json.dumps(source, indent=2) + "\n", encoding="utf-8")
     if operating_system == "windows":
         (folder / "打开会话工具.cmd").write_text(
             '@echo off\r\ncd /d "%~dp0"\r\n'
             'call "tools\\session-desktop\\start.cmd"\r\n', encoding="utf-8", newline="")
+        (folder / "打开付款前测试.cmd").write_text(
+            '@echo off\r\ncd /d "%~dp0"\r\n'
+            'call "tools\\prepayment-desktop\\start.cmd"\r\n', encoding="utf-8", newline="")
     else:
         launch = folder / "open-session-tool.sh"
         launch.write_text('#!/usr/bin/env sh\nset -eu\ncd "$(dirname "$0")"\n'
                           'exec python3 tools/session-desktop/app.py\n', encoding="utf-8")
         launch.chmod(0o755)
+        prepare_launch = folder / "open-prepayment-tool.sh"
+        prepare_launch.write_text('#!/usr/bin/env sh\nset -eu\ncd "$(dirname "$0")"\n'
+                                  'exec python3 tools/prepayment-desktop/app.py\n', encoding="utf-8")
+        prepare_launch.chmod(0o755)
     manifest = {str(path.relative_to(folder)): sha256(path)
                 for path in sorted(folder.rglob("*")) if path.is_file()}
     (folder / "SHA256SUMS.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

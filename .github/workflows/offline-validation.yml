@@ -39,7 +39,9 @@ jobs:
           node --check tools/userscript/session-login.user.js
           node --test tools/userscript/session-login.test.cjs tools/userscript/session-login.ui.test.cjs
       - name: Verify desktop controller without starting a browser
-        run: python3 -m unittest discover -s tools/session-desktop -p 'test_*.py' -v
+        run: |
+          python3 -m unittest discover -s tools/session-desktop -p 'test_*.py' -v
+          python3 -m unittest discover -s tools/prepayment-desktop -p 'test_*.py' -v
 
   python-browser:
     if: github.repository == '7yedeng/kwMembership'
@@ -168,12 +170,13 @@ jobs:
         env:
           KWMEMBERSHIP_REQUIRE_CHROME_RUNTIME_TESTS: '1'
           KWMEMBERSHIP_REQUIRE_SESSION_RUNTIME_TESTS: '1'
+          KWMEMBERSHIP_REQUIRE_PREPAYMENT_RUNTIME_TESTS: '1'
           GOPROXY: 'off'
           GOTOOLCHAIN: local
         run: |
           set -euo pipefail
           xvfb-run -a -s '-screen 0 1280x900x24' \
-            go test -count=1 -timeout=60s -run '^(TestVerifyChromeHeadedRuntime|TestSessionChromeCookieRuntimeLocal)$' \
+            go test -race -count=1 -timeout=240s -run '^(TestVerifyChromeHeadedRuntime|TestSessionChromeCookieRuntimeLocal|TestPrepaymentChromeRuntimeLocal)$' \
             -json ./internal/checkout ./internal/sessionrestore | tee "$RUNNER_TEMP/chromium-runtime-results.jsonl"
           python - <<'PY'
           import json
@@ -182,7 +185,7 @@ jobs:
 
           events = [json.loads(line) for line in
                     (Path(os.environ['RUNNER_TEMP']) / 'chromium-runtime-results.jsonl').read_text().splitlines()]
-          for name in ('TestVerifyChromeHeadedRuntime', 'TestSessionChromeCookieRuntimeLocal'):
+          for name in ('TestVerifyChromeHeadedRuntime', 'TestSessionChromeCookieRuntimeLocal', 'TestPrepaymentChromeRuntimeLocal'):
               completed = [event for event in events if event.get('Test') == name
                            and event.get('Action') in ('pass', 'fail', 'skip')]
               if len(completed) != 1 or completed[0]['Action'] != 'pass':

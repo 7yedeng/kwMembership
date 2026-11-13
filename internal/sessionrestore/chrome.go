@@ -20,12 +20,34 @@ import (
 const loginOrigin = "https://chatgpt.com"
 
 type chromeBrowser struct {
-	ctx             context.Context
+	*chromeSession
 	cancelBrowser   context.CancelFunc
 	cancelAllocator context.CancelFunc
 	profile         string
 	once            sync.Once
 	closeErr        error
+}
+
+// chromeSession deliberately has no Close method. A facade returned to a task
+// can perform authentication actions without acquiring browser ownership.
+type chromeSession struct{ ctx context.Context }
+
+// UseChromeContext wraps a Chrome target already started by the calling task.
+// It never launches/attaches a browser, opens a debugging port, or changes its
+// lifecycle. Requiring an initialized target avoids starting the allocator
+// under a short-lived authentication action context.
+func UseChromeContext(ctx context.Context) (SessionBrowser, error) {
+	if ctx == nil {
+		return nil, failure("SESSION_BROWSER_CONFIG_INVALID")
+	}
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	owned := chromedp.FromContext(ctx)
+	if owned == nil || owned.Browser == nil || owned.Target == nil {
+		return nil, failure("SESSION_BROWSER_CONFIG_INVALID")
+	}
+	return &chromeSession{ctx: ctx}, nil
 }
 
 // NewChrome creates only a fresh, disposable profile. It has no attach/CDP URL,
@@ -57,7 +79,7 @@ func NewChrome(parent context.Context, options Options) (Browser, error) {
 	quiet := func(string, ...any) {}
 	browserContext, cancelBrowser := chromedp.NewContext(allocator,
 		chromedp.WithLogf(quiet), chromedp.WithErrorf(quiet), chromedp.WithDebugf(quiet))
-	browser := &chromeBrowser{ctx: browserContext, cancelBrowser: cancelBrowser,
+	browser := &chromeBrowser{chromeSession: &chromeSession{ctx: browserContext}, cancelBrowser: cancelBrowser,
 		cancelAllocator: cancelAllocator, profile: profile}
 	if err = startPersistentBrowser(browserContext, options.Timeout, cancelBrowser, func(ctx context.Context) error {
 		return chromedp.Run(ctx, network.Enable(), chromedp.Navigate("about:blank"))
@@ -87,7 +109,7 @@ func startPersistentBrowser(ctx context.Context, timeout time.Duration, abort co
 
 // action uses the caller's cancellation/deadline while retaining the allocated
 // browser's chromedp context values.
-func (browser *chromeBrowser) action(ctx context.Context, actions ...chromedp.Action) error {
+func (browser *chromeSession) action(ctx context.Context, actions ...chromedp.Action) error {
 	operation, cancel := context.WithCancel(browser.ctx)
 	stop := context.AfterFunc(ctx, cancel)
 	defer func() { stop(); cancel() }()
@@ -97,7 +119,7 @@ func (browser *chromeBrowser) action(ctx context.Context, actions ...chromedp.Ac
 	return chromedp.Run(operation, actions...)
 }
 
-func (browser *chromeBrowser) WriteCookies(ctx context.Context, cookies []provider.SessionCookie) error {
+func (browser *chromeSession) WriteCookies(ctx context.Context, cookies []provider.SessionCookie) error {
 	return browser.action(ctx, chromedp.ActionFunc(func(target context.Context) error {
 		for _, cookie := range cookies {
 			if err := network.SetCookie(cookie.Name, cookie.Value).WithURL(loginOrigin + "/").
@@ -115,7 +137,7 @@ func sessionCookieName(name string) bool {
 	return name == base || strings.HasPrefix(name, base+".")
 }
 
-func (browser *chromeBrowser) ReadCookies(ctx context.Context) ([]Cookie, error) {
+func (browser *chromeSession) ReadCookies(ctx context.Context) ([]Cookie, error) {
 	var cookies []Cookie
 	err := browser.action(ctx, chromedp.ActionFunc(func(target context.Context) error {
 		all, err := storage.GetCookies().Do(target)
@@ -140,7 +162,7 @@ func cookieFact(cookie *network.Cookie) Cookie {
 		Partitioned: cookie.PartitionKey != nil || cookie.PartitionKeyOpaque}
 }
 
-func (browser *chromeBrowser) Navigate(ctx context.Context) error {
+func (browser *chromeSession) Navigate(ctx context.Context) error {
 	return browser.action(ctx, chromedp.Navigate(loginOrigin+"/"))
 }
 
@@ -168,7 +190,7 @@ const observeIdentityJS = `(async () => {
   } catch (_) { return {code:'SESSION_IDENTITY_UNAVAILABLE'}; }
 })()`
 
-func (browser *chromeBrowser) Observe(ctx context.Context) (Observation, error) {
+func (browser *chromeSession) Observe(ctx context.Context) (Observation, error) {
 	var observed struct {
 		Code   string `json:"code"`
 		UserID string `json:"userID"`

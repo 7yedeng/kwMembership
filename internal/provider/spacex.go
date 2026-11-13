@@ -356,30 +356,38 @@ func (c *SpaceXClient) ListTransactions(ctx context.Context, cardID int64, page,
 	return items, nil
 }
 
+// spaceXCardDetails is the documented basic card-detail shape shared by the
+// legacy SpaceX endpoint and Zovo. It contains no membership/session fields.
+type spaceXCardDetails struct {
+	CardNumber  string `json:"card_number"`
+	CVV         string `json:"cvv"`
+	Expire      string `json:"expire"`
+	Status      string `json:"status"`
+	UserName    string `json:"user_name"`
+	FirstName   string `json:"first_name"`
+	LastName    string `json:"last_name"`
+	CardAddress *struct {
+		Line1      string `json:"address_line_one"`
+		Line2      string `json:"address_line_two"`
+		City       string `json:"city"`
+		State      string `json:"state"`
+		Country    string `json:"country"`
+		PostalCode string `json:"post_code"`
+	} `json:"card_address"`
+}
+
 func (c *SpaceXClient) GetCardMaterial(ctx context.Context, cardID int64, now time.Time) (CardMaterial, error) {
 	if cardID <= 0 {
 		return CardMaterial{}, fail("CHECKOUT_MATERIAL_INVALID", "card id is invalid", false)
 	}
-	var raw struct {
-		CardNumber  string `json:"card_number"`
-		CVV         string `json:"cvv"`
-		Expire      string `json:"expire"`
-		Status      string `json:"status"`
-		UserName    string `json:"user_name"`
-		FirstName   string `json:"first_name"`
-		LastName    string `json:"last_name"`
-		CardAddress *struct {
-			Line1      string `json:"address_line_one"`
-			Line2      string `json:"address_line_two"`
-			City       string `json:"city"`
-			State      string `json:"state"`
-			Country    string `json:"country"`
-			PostalCode string `json:"post_code"`
-		} `json:"card_address"`
-	}
+	var raw spaceXCardDetails
 	if err := c.request(ctx, http.MethodGet, fmt.Sprintf("/cards/%d", cardID), nil, "", &raw); err != nil {
 		return CardMaterial{}, err
 	}
+	return spaceXMaterialFromDetails(raw, now)
+}
+
+func spaceXMaterialFromDetails(raw spaceXCardDetails, now time.Time) (CardMaterial, error) {
 	number := regexp.MustCompile(`\D`).ReplaceAllString(raw.CardNumber, "")
 	cvv := strings.TrimSpace(raw.CVV)
 	expire := strings.Split(strings.TrimSpace(raw.Expire), "/")

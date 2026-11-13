@@ -1,65 +1,68 @@
-# 会话与付款前审核工具包
+# 会话与付款前测试工具包
 
-## 先使用哪个文件
+## 本轮使用入口
 
-Windows：解压整个包，双击 **打开会话工具.cmd**。需要已安装带 Tkinter 的 Python 3；程序不会安装依赖、修改浏览器设置或接管你正在使用的浏览器。
+Windows：完整解压后，双击 **打开付款前测试.cmd**。需要已有 Chrome，以及带 Tkinter 的 Python 3。该窗口是独立桌面程序，Session 不会粘贴到网页聊天框里。
 
-Linux：运行 `sh open-session-tool.sh`。没有图形桌面时，可以直接使用 `bin/` 中的 CLI。
+Linux：有桌面时运行 `sh open-prepayment-tool.sh`；服务器可以直接运行 `bin/membership-prepare`。
 
-界面中的 Session 输入框初始为空。不要把真实 Session 填进示例文件、命令行参数或聊天记录。
+原来的 **打开会话工具.cmd** 仍只负责登录恢复。用户已反馈旧版在本机成功测试两个自己的账号；新的整合付款前流程尚未获得真实网站验收，不能把登录成功等同于结账链路已验证。
 
-## 验收登录这一步
+## 一次付款前测试
 
-1. 在界面中选择本机 Chrome/Chromium 程序路径；通常会自动找到常见安装位置。
-2. 粘贴完整 Session，勾选“显示独立浏览器”。
-3. 直接点击“恢复登录并核验”。程序会先检查输入，再启动浏览器，无须先点另一个按钮。
-4. 程序新建独立临时环境，恢复已有 Cookie、回读，然后打开页面核对账号。如输入含用户 ID，会同时核对 ID 与邮箱。
-5. 只有最终代码是 `SESSION_VERIFIED`，且 Cookie 回读、远端身份、账号匹配、临时环境清理全部通过，进程正常退出，才算工具这次任务完成。
+1. 粘贴自己的完整 Session；应包含 `sessionToken` 及账号身份。只有 `accessToken` 不能用于本工具的 Cookie 恢复路径。
+2. 填入 Zovo 的 `appId`（可选）、`appSecret` 和一张已存在的卡的本地数字 `cardId`。这些值只送入本机子进程的 stdin，不作为命令行参数。
+3. 输入自己接受的预算下限、上限。当前自动入口限定 **Plus / PH / PHP**；工具显示的金额必须来自当次页面，示例预算不是实时售价。
+4. 优先使用卡台返回的实际账单资料。若资料缺失，可补入这张卡实际登记的姓名和地址；不生成随机地址，不把套餐市场改写成持卡人地址。
+5. 保持“显示独立浏览器”开启，启动付款前流程。工具创建临时 profile，恢复已有 Cookie、核验身份，然后在同一浏览器里进入结账。
+6. 工具先填写账单资料并等待税额更新，核对套餐、币种和金额，再填写卡资料。最后再次读回字段和报价，停在最终付款按钮前。
 
-“仅检查输入”通过、Cookie 写入成功、浏览器打开成功，都不等于已上号。真实 Session 必须包含 `sessionToken`；只有 `accessToken` 不适用于这个恢复路径。
+程序没有“确认付款”命令，界面也没有付款按钮。观察期结束或取消后，它关闭自有浏览器并清理临时 profile。不要在观察窗口里手动点击付款：手工动作不属于此工具的自动化验收结果。
 
-如果想先做不联网的格式检查，可以单独点击“仅检查输入”。每次启动任务都会清空输入框，之后要恢复登录时需重新粘贴 Session。
+## 怎样判定结果
 
-显示浏览器选项只供观察。核验后最多观察五分钟，再关闭临时浏览器；它不会把账号永久留在你的常用浏览器里。取消按钮会请求正常结束并清理临时环境。
+只有 `PREPAYMENT_REVIEW_READY`，且身份、Cookie 回读、账单与卡字段核验均成立，才表示自动流程到达付款前审核。最终结果还应显示正常关闭；中途取消、超时或清理失败不会继续报告最终成功。
 
-本包尚未通过真实 ChatGPT 账号验收。当前受管工具的站点访问限制没有改变；本包供你在自己有权使用的环境中操作和验收。
+报告会分别显示报价、卡状态、商户限制和余额核验结果。卡台没有提供余额币种时，余额是否足够保持未知，不能把卡上的数字直接与 PHP 总价比较。`readyForConfirmation` 表示页面和字段已就绪，不是扣款能力或支付成功保证。
 
-## CLI 入口
+已订阅账号会返回 `PREPAYMENT_ALREADY_SUBSCRIBED`。页面缺金额、税或折扣证据时会返回 `PREPAYMENT_QUOTE_INCOMPLETE`；若结账还需要激活“下一步”等控制，则返回 `PREPAYMENT_PROGRESSION_REQUIRED`。这些都不是通过，不能通过改标签、补零或重复点击来冒充完成。
 
-所有 Session 都通过 stdin 传入；以下文件名表示你自己的输入来源，程序不会替你保存 Session 文件。
+所有结果都保持 `paymentAllowed:false`、`submitActivated:false`、`fundingActionsTaken:0`。当前测试工具只查卡，不自动开卡、加款或改变续费。
+
+## CLI
+
+完整输入格式见 `docs/PREPAYMENT_TOOL.md`。`your-input.json` 仅代表你自己选择的输入来源；也可由上游程序通过 stdin 直接传入，不必保存凭据文件。
+
+```text
+bin/membership-prepare --check < your-input.json
+bin/membership-prepare --run --chrome-path PATH --show-browser --hold-open 2m < your-input.json
+```
+
+Windows 使用同名 `.exe`。`--check` 默认执行离线格式检查，不开浏览器、不联网。只有显式 `--run` 才执行恢复登录和付款前流程。
+
+`--show-browser` 选择完整有窗口的 Chrome。在 Linux 私有 Xvfb 显示里运行同一模式可以无人值守，不需要有人盯着窗口。省略该参数是严格 headless；项目尚不能保证目标站点接受该模式。生产 worker 的数据库、锁、资金许可和对账机制仍独立保留，验收 CLI 不替代生产队列。
+
+原有工具仍可使用：
 
 ```text
 bin/membership-session --inspect < your-session.json
 bin/membership-session --restore --chrome-path PATH --show-browser --hold-open 2m < your-session.json
+bin/membership-review --example
 ```
 
-Windows 使用对应的 `.exe`。也可以让其他程序直接向 stdin 管道写入 JSON。省略 `--show-browser` 是隐藏运行，但目标站点可能拒绝这种运行方式；不能仅凭开关保证登录成功。
+`membership-review` 是离线报价审核器；示例为合成数据。`membership-preflight` 是旧观察入口，与新的 `membership-prepare` 不同。
 
-## 审核最终金额
+## 可更换的卡台
 
-`membership-review` 是独立的离线金额审核器：
+源码新增独立 `zovocard` 适配器，覆盖基础查卡、开卡、加款、交易查询等接口，不依赖 Zovo GPT 代充或提取支付链接接口。当前付款前工具使用它的只读单卡快照能力。
 
-```text
-bin/membership-review --example > quote-example.json
-bin/membership-review < quote-example.json
-```
+开卡、加款属于另外的资金操作。它们的底层实现已经提供，但不会由此验收工具调用。未知结果进入核对状态，禁止自动重放；旧 worker 的库存流程仍需解除对商户价格服务的依赖，才能完整换成这个基础适配器。详见 `docs/ZOVO_BASIC_CARD_API.md`。
 
-示例是合成 Go/EGP 数据，**不是实时售价**。审核器检查套餐、国家、币种、预算、折扣和税额关系。输入必须为十进制字符串，输出使用整数最小单位，避免把小计当成总价或把含税价格再加一次税。
+## 其他文件
 
-结果 `reviewReady:true` 只表示输入的金额关系成立；`remoteVerified:false` 与 `paymentAllowed:false` 始终保留。它不会从网站自动读取报价，也不会付款。
+- `docs/PREPAYMENT_INTEGRATION_STATUS.md`：本轮实现、验收范围和仍缺的现场证据。
+- `docs/PREPAYMENT_BROWSER_CORE.md`：同一浏览器的模块衔接和页面证据要求。
+- `userscript/session-login.user.js`：完整油猴替换文件；它不是新付款前工具的依赖。
+- `SOURCE.json`：本包对应的源码提交及能力范围。
 
-## 现有付款前观察工具
-
-`membership-preflight` 保留原有非付款入口。Go/EGP 目前是用户手工登录并进入结账页后的观察模式，真实 DOM 适配仍未验收。不能将它理解成自动 Go 充值。
-
-## 油猴完整替换文件
-
-`userscript/session-login.user.js` 是 0.1.1 完整脚本。全选替换旧脚本内容后保存，不要只在截图附近补括号。它会直接展开版本面板；缺少 Cookie 能力时也会显示明确提示。
-
-旧完整文件原本能够通过语法检查，因此截图中已安装副本的准确语法错误仍未确认。本版修复了可复现的界面启动缺陷，不宣称已修复用户安装副本里未知的所有编辑错误。
-
-## 工具包边界
-
-本包没有自动付款入口，不会开卡、加款、绑卡或修改续费。卡台可替换接口已经在项目源码中实现，生产工作流与此独立验收工具分开。完整进展见 `docs/SINGLE_FLOW_DEVELOPMENT.md`，账号工具说明见 `docs/SESSION_RESTORE.md`。
-
-真实账号材料只进入运行中的进程和临时浏览器 profile；正常退出后清理。系统强制终止或断电可能留下临时文件，所以不能承诺操作系统层绝无磁盘痕迹。
+真实材料只进入当前进程和临时浏览器 profile；正常退出后清理。强制终止或断电仍可能留下临时文件。

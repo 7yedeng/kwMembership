@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -8,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 )
 
 // CardPlatformConfig is transient constructor input. The workflow owns the
@@ -44,6 +46,22 @@ type configuredCardPlatform struct {
 func (p *configuredCardPlatform) Key() string  { return p.key }
 func (p *configuredCardPlatform) Kind() string { return p.kind }
 
+func (p *configuredCardPlatform) GetCardSnapshot(ctx context.Context, cardID int64, now time.Time) (CardSnapshot, error) {
+	reader, ok := p.CardPlatform.(CardSnapshotReader)
+	if !ok {
+		return CardSnapshot{}, UnsupportedCapability(p.kind, "single-card snapshot")
+	}
+	return reader.GetCardSnapshot(ctx, cardID, now)
+}
+
+func (p *configuredCardPlatform) AllowsFundingReplay(operation string) bool {
+	if policy, ok := p.CardPlatform.(FundingReplayPolicy); ok {
+		return policy.AllowsFundingReplay(operation)
+	}
+	// Preserve existing adapters' legacy capability/window checks.
+	return true
+}
+
 // CardPlatformKind is for adapter-specific error classification only. Durable
 // inventory, billing and funding scopes must use CardPlatform.Key instead.
 // Direct legacy clients expose their kind through Key and remain compatible.
@@ -71,6 +89,7 @@ func NewCardPlatformRegistry() *CardPlatformRegistry {
 	return &CardPlatformRegistry{factories: map[string]CardPlatformFactory{
 		CardPlatformSpaceX: newConfiguredSpaceX,
 		CardPlatformEfun:   newConfiguredEfun,
+		CardPlatformZovo:   newConfiguredZovo,
 	}}
 }
 
@@ -151,6 +170,17 @@ func newConfiguredEfun(client *http.Client, config CardPlatformConfig) (CardPlat
 	return NewEfunCardClient(client, config.BaseURL, credential.APIKey)
 }
 
+func newConfiguredZovo(client *http.Client, config CardPlatformConfig) (CardPlatform, error) {
+	var credential struct {
+		AppID     string `json:"appId"`
+		AppSecret string `json:"appSecret"`
+	}
+	if json.Unmarshal(config.CredentialJSON, &credential) != nil || strings.TrimSpace(credential.AppSecret) == "" {
+		return nil, cardFactoryError("CARD_PLATFORM_NOT_CONFIGURED")
+	}
+	return NewZovoClientWithBaseURL(client, config.BaseURL, credential.AppID, credential.AppSecret)
+}
+
 func cardFactoryError(code string) error {
 	return &Error{ErrorCode: code, Message: code, KnownNoWrite: true}
 }
@@ -161,6 +191,7 @@ func safeCardFactoryError(err error) error {
 		switch source.ErrorCode {
 		case "CARD_PLATFORM_NOT_CONFIGURED", "CARD_PLATFORM_CONFIGURATION_INVALID",
 			"SPACEXCARD_OPENAPI_NOT_CONFIGURED", "SPACEXCARD_CONFIGURATION_INVALID",
+			"ZOVOCARD_OPENAPI_NOT_CONFIGURED", "ZOVOCARD_CONFIGURATION_INVALID",
 			"EFUNCARD_OPENAPI_NOT_CONFIGURED", "EFUNCARD_CONFIGURATION_INVALID":
 			return cardFactoryError(source.ErrorCode)
 		}

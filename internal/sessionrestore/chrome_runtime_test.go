@@ -28,15 +28,23 @@ func TestSessionChromeCookieRuntimeLocal(t *testing.T) {
 		t.Fatal(SafeCode(err))
 	}
 	defer browser.Close()
-	profile := browser.(*chromeBrowser).profile
+	owner := browser.(*chromeBrowser)
+	profile := owner.profile
+	borrowed, err := UseChromeContext(owner.ctx)
+	if err != nil {
+		t.Fatal("LOCAL_STARTED_CONTEXT_NOT_ACCEPTED")
+	}
+	if _, ownsLifecycle := borrowed.(interface{ Close() error }); ownsLifecycle {
+		t.Fatal("LOCAL_BORROWED_BROWSER_EXPOSES_CLOSE")
+	}
 	cookies := []provider.SessionCookie{{
 		Name: "__Secure-next-auth.session-token", Value: "synthetic-not-a-session-" + strings.Repeat("a", 48),
 		Domain: ".chatgpt.com", Path: "/", SameSite: "lax", Secure: true, HTTPOnly: true,
 	}}
-	if err := browser.WriteCookies(ctx, cookies); err != nil {
+	if err := borrowed.WriteCookies(ctx, cookies); err != nil {
 		t.Fatal("LOCAL_COOKIE_WRITE_FAILED")
 	}
-	observed, err := browser.ReadCookies(ctx)
+	observed, err := borrowed.ReadCookies(ctx)
 	if err != nil {
 		t.Fatal("LOCAL_COOKIE_READ_FAILED")
 	}
@@ -47,7 +55,7 @@ func TestSessionChromeCookieRuntimeLocal(t *testing.T) {
 	}
 	// A second action after the first one returned catches allocator lifetime
 	// errors that a fake Browser interface cannot detect.
-	if _, err := browser.ReadCookies(ctx); err != nil {
+	if _, err := browser.ReadCookies(ctx); err != nil || owner.ctx.Err() != nil {
 		t.Fatal("LOCAL_BROWSER_DID_NOT_REMAIN_ALIVE")
 	}
 	if err := browser.Close(); err != nil {
