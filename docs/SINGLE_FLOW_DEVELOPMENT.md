@@ -17,7 +17,7 @@
 | 结账建单 | checkout.Executor；既有preflight | 保留Plus建单、Go手工观察范围，不猜测Go SKU | Go自动建单未完成 |
 | 金额确认 | checkout.ReviewQuote；membership-review | 整数金额、税/折扣/总额核验，受控确认摘要 | 目前输入证据来自本地，未自动采集实时报价 |
 | 卡台接入 | provider.CardPlatformRegistry / CardPlatform | 两内置适配器，统一构造接口，配置key隔离修复 | 未调用真实开卡/充值 |
-| 自动填表与推进 | 既有Go/Python浏览器执行器 | 保留已有字段回读与资金动作边界；单元/DOM替身测试 | 当前云Chromium被AF_UNIX限制阻断，真实页面未验收 |
+| 自动填表与推进 | 既有Go/Python浏览器执行器 | 保留已有字段回读与资金动作边界；CI真实Chromium运行合成页面测试通过 | 当前聊天云容器被AF_UNIX限制阻断；真实支付页面未验收 |
 | 最终付款 | Go ActionGuard / durable permit | 沿用资金许可与交易基线；保持关闭 | 未付款 |
 | 结果核对 | processor reconciliation | 沿用交易与目标权益双证据，未知不盲重试 | 未实盘 |
 | 续费操作 | AccountServices / Renewal | 保留接口与读回确认；第三方依赖尚待替换 | 未修改真实订阅 |
@@ -43,6 +43,16 @@
 | Porter 9月18日原帖 | 先浏览器自动化、后协议路线的作者自述 | 作者明确未公开具体实现；不能推断其卡台或实际请求细节 |
 
 新推测先记入候选项，再用官方文档/实际源码/允许环境中的观察验证。不得把推测的URL、SKU、页面属性或测试fixture写成线上事实。
+
+## 本轮执行证据
+
+[GitHub Actions 第10次运行](https://github.com/7yedeng/kwMembership/actions/runs/43474176604) 对代码提交 `ac533bd2a267e0a20574f9cf4e64c20325a457f4` 的三个作业全部通过：
+
+- Go：16个包通过；油猴38项测试通过，零跳过；桌面控制器6项测试通过。
+- Python/Chromium：59项测试通过，零跳过。页面使用本地合成fixture，不是真实ChatGPT或Stripe付款页。
+- 完整Chrome/Xvfb：既有生产浏览器启动测试和新增 `TestSessionChromeCookieRuntimeLocal` 均明确pass；后者只停留在about:blank，验证合成Cookie写入/精确回读、浏览器保活和临时profile删除。
+
+当前聊天云容器中相同Chromium填表组仍有13项因AF_UNIX限制跳过；CI通过不代表该容器限制已解除，也不代表真实账号、Go报价或付款已验证。本节之后仅有交付说明修订，实际源码版本以工具包 `SOURCE.json` 和PR最新提交为准。
 
 ## 下一步的单笔验收顺序
 

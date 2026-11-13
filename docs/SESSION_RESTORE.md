@@ -37,7 +37,7 @@ py -3 tools/session-desktop/app.py
 
 也可以双击 `tools/session-desktop/start.cmd`。Linux/macOS 使用 `sh tools/session-desktop/start.sh`。桌面界面需要带 Tkinter 的 Python；不自动安装任何依赖。GUI 会尝试定位 `bin/membership-session(.exe)` 和常见浏览器路径，也可手动选择。它不会读取系统浏览器 Profile、密码或现有 Cookie。
 
-GUI 输入框初始为空。先粘贴完整 Session，按“仅检查输入”；再按“恢复登录并核验”。输入只经标准输入管道传给程序，不会进入命令行参数或保存为额外 Session 文件。启动后清空输入框中的可见副本。
+GUI 输入框初始为空。粘贴完整 Session 后，直接按“恢复登录并核验”；恢复任务会先检查输入。“仅检查输入”是可选的独立离线操作，每次启动任务都会清空输入框，因此检查后若要恢复，需重新粘贴 Session。输入只经标准输入管道传给程序，不会进入命令行参数或保存为额外 Session 文件。
 
 ## CLI 使用
 
