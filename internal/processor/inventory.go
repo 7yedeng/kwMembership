@@ -356,7 +356,7 @@ func (p *Processor) schedulePlatformInventory(ctx context.Context, key, mode str
 
 func (p *Processor) discoverInventoryPage(ctx context.Context, client provider.CardPlatform, run inventoryRun, now time.Time) error {
 	contractCode := "CARD_PLATFORM_CONTRACT_DRIFT"
-	if client.Key() == provider.CardPlatformSpaceX {
+	if provider.CardPlatformKind(client) == provider.CardPlatformSpaceX {
 		contractCode = "SPACEXCARD_CONTRACT_DRIFT"
 	}
 	if run.NextPage < 1 || run.NextPage > inventoryMaxPages {

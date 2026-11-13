@@ -3,7 +3,6 @@ package processor
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -71,27 +70,10 @@ func (p *Processor) cardPlatform(ctx context.Context, key string) (provider.Card
 			if decryptErr != nil {
 				return nil, codedWrap("CARD_PLATFORM_NOT_CONFIGURED", "decrypt card platform credential", decryptErr)
 			}
-			switch config.Kind {
-			case provider.CardPlatformSpaceX:
-				var credential struct {
-					AppID     string `json:"appId"`
-					AppSecret string `json:"appSecret"`
-				}
-				if json.Unmarshal([]byte(plain), &credential) != nil || strings.TrimSpace(credential.AppSecret) == "" {
-					return nil, coded("CARD_PLATFORM_NOT_CONFIGURED", "SpaceX Card credential is invalid")
-				}
-				return provider.NewSpaceXClientWithBaseURL(p.httpClient, config.BaseURL.String, credential.AppID, credential.AppSecret)
-			case provider.CardPlatformEfun:
-				var credential struct {
-					APIKey string `json:"apiKey"`
-				}
-				if json.Unmarshal([]byte(plain), &credential) != nil || strings.TrimSpace(credential.APIKey) == "" {
-					return nil, coded("CARD_PLATFORM_NOT_CONFIGURED", "EfunCard credential is invalid")
-				}
-				return provider.NewEfunCardClient(p.httpClient, config.BaseURL.String, credential.APIKey)
-			default:
-				return nil, coded("CARD_PLATFORM_KIND_UNSUPPORTED", "card platform kind is unsupported")
-			}
+			return provider.NewCardPlatform(p.httpClient, provider.CardPlatformConfig{
+				Key: config.Key, Kind: config.Kind, BaseURL: config.BaseURL.String,
+				CredentialJSON: []byte(plain),
+			})
 		}
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return nil, err
