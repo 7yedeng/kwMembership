@@ -1,5 +1,13 @@
 # kwMembership
 
+> **7yedeng 自有付款引擎研究分支（2026-11-13）**：本分支增加独立无付款预检 CLI、按卡绑定的账单资料、账号服务注入和支付执行修复。请先阅读 [自有引擎实现与验收](docs/INDEPENDENT_ENGINE.md)、[独立预检与数据库契约](docs/STANDALONE_CONTRACT.md)、[账号与浏览器测试顺序](docs/ACCOUNT_BROWSER_RUNBOOK.md) 和 [验证记录](docs/VALIDATION.md)。当前默认 worker 仍采用下文的 kwRedeem 配套方式；本分支尚不构成脱离配套系统即可实际付款的成品。
+
+新增：[Go 套餐非付款预检与埃及 EGP 契约](docs/GO_PLAN_PREFLIGHT.md)、[只读 worker 数据库契约检查](docs/SCHEMA_CHECK.md)、[服务器会话隔离与 IPC 审计](docs/SERVER_ISOLATION_AND_IPC.md)、[IPC 创建失败与替代方案复核](docs/IPC_DIAGNOSIS_FOLLOWUP.md)。Go 仅开放手动进入页面后的观察路径，EGP 必须显式配对 EG；默认 worker 的 Go 自动付款尚未实现。
+
+浏览器运行验证：[不同执行面与完整 Chromium + Xvfb 验收](docs/BROWSER_RUNTIME_ACCEPTANCE.md)、[Playwright 官方仓库与状态恢复说明](docs/PLAYWRIGHT_RUNTIME_NOTES.md)。独立 CI job 直接调用生产 `VerifyChrome`，保留正常 sandbox；结果不等同真实账号登录或充值成功。
+
+扩展与登录态研究：[Zovo 官方插件入口、Cookie-Editor 源码与 host restrictions 核验](docs/EXTENSIONS_AND_HOST_ACCESS.md)、[GPT 插件 4.3.21 实包静态审查](docs/ZOVO_EXTENSION_4_3_21_REVIEW.md)。已 Fork Cookie-Editor，并取得桌面 ZIP 核对 manifest 与调用链；插件具备 Cookie 导入后刷新和自动填表，但仍依赖 Zovo 后端，没有 Go 套餐分支或最终付款提交。本轮未导入真实 Session 或付款。
+
 独立的 Go 会员自动化 worker。代码与 kwRedeem 分开维护，但直接读取和写入 kwRedeem 的 SQLite/WAL 数据库，不创建第二套会员数据库。
 
 Go worker 负责：
@@ -40,7 +48,7 @@ bash scripts/start-worker.sh
 KWMEMBERSHIP_EXECUTOR_SECRET=<与 .env 相同的随机密钥> python3 -m python_executor
 ```
 
-`scripts/check.sh` 会确认它打开的是 kwRedeem 数据库且共享表完整；只有 `legacy-go` 模式会启动一次 `about:blank` Chrome 自检。检查不会获取订单或执行付款。
+`scripts/check.sh` 会打开配置的 kwRedeem 数据库，并检查 `VerifySharedSchema` 列出的 17 个表名是否存在；这不等于完整验证所有业务表、列、索引或生产迁移。只有 `legacy-go` 模式会启动一次 `about:blank` Chrome 自检。检查不会获取订单或执行付款。
 
 启动 kwRedeem API 后，进入“会员履约 → 实施状态”，应看到：
 
@@ -152,6 +160,6 @@ ssh -L 6080:127.0.0.1:6080 root@服务器地址
 
 ### 实验性免托管密码登录预检
 
-只有经管理员明确选中的单笔履约可以进入 `CHECKOUT_LOGIN_READY`。Go 会打开一个全新的可视化无痕窗口并写入 `CHECKOUT_LOGIN_WAIT`；管理员通过上面的 SSH + noVNC 通道直接登录 ChatGPT，并手动进入 Plus 结账页。账号密码、MFA、Passkey 和浏览器 Cookie 不进入 kwRedeem、kwMembership 或普通日志。
+只有经管理员明确选中的单笔履约可以进入 `CHECKOUT_LOGIN_READY`。Go 会打开使用独立临时 profile 的可视化窗口并写入 `CHECKOUT_LOGIN_WAIT`；管理员通过上面的 SSH + noVNC 通道直接登录 ChatGPT，并手动进入 Plus 结账页。账号密码、MFA、Passkey 和浏览器 Cookie 不进入 kwRedeem、kwMembership 或普通日志。脱离此共享数据库的诊断入口见 [独立预检 CLI](docs/STANDALONE_CONTRACT.md)。
 
 Go 只在浏览器内读取当前登录邮箱并与订单身份进行内存比对，然后执行既有的 Plus / PH / PHP / 价格区间和结账结构预检。成功后停在 `CHECKOUT_LOGIN_PREFLIGHT_PASSED`，不会进入 `FUNDING_READY`，不会读取卡资料、准备资金或授权支付。窗口关闭后登录上下文即销毁；该实验结果不能用于生产付款或 Canary 资格。

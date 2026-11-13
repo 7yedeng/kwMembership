@@ -79,6 +79,9 @@ func (b *Bridge) Execute(ctx context.Context, request checkout.Request) (checkou
 		len(request.Session) == 0 || request.ExpectedEmail == "" {
 		return checkout.Result{}, bridgeError("CHECKOUT_REQUEST_INVALID", "Python executor binding is invalid")
 	}
+	if err := checkout.ValidatePlanContract(request); err != nil {
+		return checkout.Result{}, err
+	}
 	kind := "payment"
 	if request.Mode == checkout.ModeSessionPreflight {
 		kind = "preflight"

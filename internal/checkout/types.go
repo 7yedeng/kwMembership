@@ -33,6 +33,7 @@ type PriceContract struct {
 	ID        string
 	Version   int
 	Tier      string
+	Country   string `json:",omitempty"`
 	Currency  string
 	MinAmount float64
 	MaxAmount float64
@@ -48,6 +49,7 @@ type CardMaterial struct {
 type BillingAddress struct {
 	Name       string
 	Line1      string
+	Line2      string
 	City       string
 	State      string
 	PostalCode string

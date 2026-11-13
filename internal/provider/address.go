@@ -22,6 +22,7 @@ type BillingAddress struct {
 	Name       string
 	Phone      string
 	Line1      string
+	Line2      string
 	City       string
 	State      string
 	PostalCode string

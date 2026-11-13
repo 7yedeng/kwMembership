@@ -257,7 +257,7 @@ func (p *Processor) processEligibility(ctx context.Context, fulfillment Fulfillm
 		}
 		return cause
 	}
-	raw, err := p.membership.Fetch(ctx, json.RawMessage(plain))
+	observation, err := p.fetchMembershipObservation(ctx, json.RawMessage(plain), now)
 	if leaseErr := p.assertWorkAllowed(ctx); leaseErr != nil {
 		return leaseErr
 	}
@@ -269,39 +269,30 @@ func (p *Processor) processEligibility(ctx context.Context, fulfillment Fulfillm
 		}
 		return p.eligibilityDependencyFailure(ctx, fulfillment, err, state, now)
 	}
-	observation, err := domain.NormalizeMembershipEnvelope(raw, now)
-	if err != nil {
-		cause := codedWrap(domain.ErrorCode(err), "membership provider response contract is invalid", err)
-		return p.eligibilityDependencyFailure(ctx, fulfillment, cause, "MEMBERSHIP_CONTRACT_UNKNOWN", now)
-	}
 	if observation.AutoRenew != nil && *observation.AutoRenew {
 		if err := p.persistObservation(ctx, fulfillment.ID, "", "starting_before_renewal_cancel", observation); err != nil {
 			return err
 		}
-		token, err := p.renewalToken(ctx)
-		if err != nil {
-			return p.eligibilityFailure(ctx, fulfillment, errorCode(err), "ACCOUNT_REPURCHASE_NOT_READY", now, sharedRetry)
-		}
-		if err := p.renewal.Cancel(ctx, json.RawMessage(plain), token); err != nil {
+		if err := p.cancelAutoRenewal(ctx, json.RawMessage(plain)); err != nil {
 			if isSessionFailureCode(errorCode(err)) {
 				return p.handleSessionFailure(ctx, fulfillment.ID, errorCode(err), "eligibility", now)
 			}
 			return p.eligibilityFailure(ctx, fulfillment, errorCode(err), "ACCOUNT_REPURCHASE_NOT_READY", now, sharedRetry)
 		}
+		cancelledAt := p.now()
 		if leaseErr := p.assertWorkAllowed(ctx); leaseErr != nil {
 			return leaseErr
 		}
-		raw, err = p.membership.Fetch(ctx, json.RawMessage(plain))
+		observation, err = p.fetchPostCancellationObservation(ctx, json.RawMessage(plain), observation, cancelledAt, now)
 		if leaseErr := p.assertWorkAllowed(ctx); leaseErr != nil {
 			return leaseErr
 		}
 		if err != nil {
-			return p.eligibilityDependencyFailure(ctx, fulfillment, err, "ACCOUNT_CHECKING", now)
-		}
-		observation, err = domain.NormalizeMembershipEnvelope(raw, now)
-		if err != nil {
-			cause := codedWrap(domain.ErrorCode(err), "post-cancellation membership response is invalid", err)
-			return p.eligibilityDependencyFailure(ctx, fulfillment, cause, "MEMBERSHIP_CONTRACT_UNKNOWN", now)
+			state := "ACCOUNT_CHECKING"
+			if errorCode(err) == "MEMBERSHIP_CONTRACT_UNKNOWN" {
+				state = "MEMBERSHIP_CONTRACT_UNKNOWN"
+			}
+			return p.eligibilityDependencyFailure(ctx, fulfillment, err, state, now)
 		}
 	}
 	classification, err := domain.ClassifyStartingMembership(observation)

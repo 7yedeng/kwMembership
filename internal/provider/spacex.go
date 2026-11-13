@@ -82,6 +82,9 @@ type CardMaterial struct {
 	ExpiryMonth string
 	ExpiryYear  string
 	Status      string
+	Holder      Cardholder
+	HolderName  string
+	Billing     *BillingAddress
 }
 
 type OpenCardInput struct {
@@ -101,10 +104,62 @@ type OpenCardResult struct {
 }
 
 func NewSpaceXClient(client *http.Client, appID, appSecret string) (*SpaceXClient, error) {
+	return NewSpaceXClientWithBaseURL(client, "", appID, appSecret)
+}
+
+// NewSpaceXClientWithBaseURL accepts an explicitly configured HTTPS origin or
+// its /openapi/v1 base path. An empty value preserves the legacy endpoint.
+// Redirects are always refused: net/http may forward custom API-key headers to
+// another host, and a redirected write cannot be assumed not to have executed.
+func NewSpaceXClientWithBaseURL(client *http.Client, baseURL, appID, appSecret string) (*SpaceXClient, error) {
 	if strings.TrimSpace(appSecret) == "" {
 		return nil, fail("SPACEXCARD_OPENAPI_NOT_CONFIGURED", "SpaceX Card OpenAPI app_secret is not configured", false)
 	}
-	return &SpaceXClient{http: client, appID: strings.TrimSpace(appID), appSecret: strings.TrimSpace(appSecret), baseURL: SpaceXCardBaseURL}, nil
+	baseURL, err := normalizeSpaceXBaseURL(baseURL)
+	if err != nil {
+		return nil, err
+	}
+	if client == nil {
+		return nil, fail("SPACEXCARD_CONFIGURATION_INVALID", "SpaceX Card HTTP client is required", false)
+	}
+	// Copy the client so the caller's redirect policy remains untouched.
+	protectedClient := *client
+	protectedClient.CheckRedirect = func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
+	return &SpaceXClient{http: &protectedClient, appID: strings.TrimSpace(appID), appSecret: strings.TrimSpace(appSecret), baseURL: baseURL}, nil
+}
+
+func normalizeSpaceXBaseURL(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return SpaceXCardBaseURL, nil
+	}
+	invalid := func() (string, error) {
+		// Do not echo a potentially credential-bearing URL in errors.
+		return "", fail("SPACEXCARD_CONFIGURATION_INVALID", "SpaceX Card base URL must be an HTTPS origin or /openapi/v1 URL without credentials, query or fragment", false)
+	}
+	u, err := url.Parse(value)
+	if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil ||
+		u.Opaque != "" || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.RawFragment != "" ||
+		u.RawPath != "" || strings.Contains(value, "#") {
+		return invalid()
+	}
+	if strings.HasSuffix(u.Host, ":") {
+		return invalid()
+	}
+	if port := u.Port(); port != "" {
+		number, err := strconv.Atoi(port)
+		if err != nil || number < 1 || number > 65535 {
+			return invalid()
+		}
+	}
+	switch u.Path {
+	case "", "/", "/openapi/v1", "/openapi/v1/":
+	default:
+		return invalid()
+	}
+	u.Host = strings.ToLower(u.Host)
+	u.Path = "/openapi/v1"
+	return u.String(), nil
 }
 
 func (c *SpaceXClient) Key() string { return CardPlatformSpaceX }
@@ -147,6 +202,9 @@ func (c *SpaceXClient) request(ctx context.Context, method, path string, input a
 		return wrap("SPACEXCARD_UNAVAILABLE", "SpaceX Card network failure", err, true)
 	}
 	defer response.Body.Close()
+	if response.StatusCode >= 300 && response.StatusCode < 400 {
+		return fail("SPACEXCARD_REDIRECT_REFUSED", "SpaceX Card redirects are not allowed", false)
+	}
 	switch response.StatusCode {
 	case http.StatusUnauthorized:
 		return fail("SPACEXCARD_AUTH_FAILED", "SpaceX Card authentication failed", false)
@@ -303,10 +361,21 @@ func (c *SpaceXClient) GetCardMaterial(ctx context.Context, cardID int64, now ti
 		return CardMaterial{}, fail("CHECKOUT_MATERIAL_INVALID", "card id is invalid", false)
 	}
 	var raw struct {
-		CardNumber string `json:"card_number"`
-		CVV        string `json:"cvv"`
-		Expire     string `json:"expire"`
-		Status     string `json:"status"`
+		CardNumber  string `json:"card_number"`
+		CVV         string `json:"cvv"`
+		Expire      string `json:"expire"`
+		Status      string `json:"status"`
+		UserName    string `json:"user_name"`
+		FirstName   string `json:"first_name"`
+		LastName    string `json:"last_name"`
+		CardAddress *struct {
+			Line1      string `json:"address_line_one"`
+			Line2      string `json:"address_line_two"`
+			City       string `json:"city"`
+			State      string `json:"state"`
+			Country    string `json:"country"`
+			PostalCode string `json:"post_code"`
+		} `json:"card_address"`
 	}
 	if err := c.request(ctx, http.MethodGet, fmt.Sprintf("/cards/%d", cardID), nil, "", &raw); err != nil {
 		return CardMaterial{}, err
@@ -326,7 +395,30 @@ func (c *SpaceXClient) GetCardMaterial(ctx context.Context, cardID int64, now ti
 	if !time.Date(yearNumber, time.Month(month)+1, 1, 0, 0, 0, 0, time.UTC).After(now.UTC()) {
 		return CardMaterial{}, fail("CHECKOUT_CARD_EXPIRED", "SpaceX Card is expired", false)
 	}
-	return CardMaterial{Number: number, CVV: cvv, ExpiryMonth: expire[0], ExpiryYear: year, Status: status}, nil
+	material := CardMaterial{
+		Number: number, CVV: cvv, ExpiryMonth: expire[0], ExpiryYear: year, Status: status,
+		Holder: Cardholder{FirstName: raw.FirstName, LastName: raw.LastName}, HolderName: raw.UserName,
+	}
+	if material.HolderName == "" {
+		var parts []string
+		for _, part := range []string{raw.FirstName, raw.LastName} {
+			if part != "" {
+				parts = append(parts, part)
+			}
+		}
+		material.HolderName = strings.Join(parts, " ")
+	}
+	// Keep only facts returned for this card, including partial addresses. Do not
+	// trim or repair them here: the billing validator must still see controls or
+	// malformed values, and an absent address must not become a generated one.
+	if address := raw.CardAddress; address != nil && (address.Line1 != "" || address.Line2 != "" ||
+		address.City != "" || address.State != "" || address.Country != "" || address.PostalCode != "") {
+		material.Billing = &BillingAddress{
+			Name: material.HolderName, Line1: address.Line1, Line2: address.Line2,
+			City: address.City, State: address.State, Country: address.Country, PostalCode: address.PostalCode,
+		}
+	}
+	return material, nil
 }
 
 func luhn(value string) bool {
@@ -373,19 +465,58 @@ func (c *SpaceXClient) GetOpenAIPayments(ctx context.Context, cardID int64, _ []
 	return items, nil
 }
 
+// GetBalance returns spendable funds for funding decisions, not the ledger
+// balance that includes an account reserve. Legacy responses with no spendable
+// or reserve fields retain their original balance semantics. Once any new
+// reserve metadata appears, the provider must supply spendable_balance; the
+// client never subtracts or guesses a reserve amount. Risk fees may make the
+// ledger balance negative; an explicit zero spendable balance remains valid.
 func (c *SpaceXClient) GetBalance(ctx context.Context) (Balance, error) {
 	var raw struct {
-		Balance  *float64 `json:"balance"`
-		Currency string   `json:"currency"`
+		Balance        *float64        `json:"balance"`
+		Spendable      json.RawMessage `json:"spendable_balance"`
+		ReserveAmount  json.RawMessage `json:"account_reserve_amount"`
+		ReserveEnabled json.RawMessage `json:"account_reserve_enabled"`
+		Currency       string          `json:"currency"`
 	}
 	if err := c.request(ctx, http.MethodGet, "/balance", nil, "", &raw); err != nil {
 		return Balance{}, err
 	}
 	raw.Currency = strings.ToUpper(strings.TrimSpace(raw.Currency))
-	if raw.Balance == nil || *raw.Balance < 0 || raw.Currency != "USD" {
+	if raw.Balance == nil || raw.Currency != "USD" {
 		return Balance{}, fail("SPACEXCARD_CONTRACT_DRIFT", "SpaceX Card balance contract drift", true)
 	}
-	return Balance{Balance: *raw.Balance, Currency: raw.Currency}, nil
+	if len(raw.ReserveAmount) != 0 {
+		var reserve *float64
+		if json.Unmarshal(raw.ReserveAmount, &reserve) != nil || reserve == nil || *reserve < 0 {
+			return Balance{}, fail("SPACEXCARD_CONTRACT_DRIFT", "SpaceX Card reserve amount is invalid", true)
+		}
+		// A depleted account can have a balance below its reserve requirement.
+		// Only the provider's spendable amount determines usable funds.
+	}
+	if len(raw.ReserveEnabled) != 0 {
+		var enabled *bool
+		if json.Unmarshal(raw.ReserveEnabled, &enabled) != nil || enabled == nil {
+			return Balance{}, fail("SPACEXCARD_CONTRACT_DRIFT", "SpaceX Card reserve status is invalid", true)
+		}
+	}
+	available := *raw.Balance
+	if len(raw.Spendable) != 0 {
+		maximumSpendable := *raw.Balance
+		if maximumSpendable < 0 {
+			maximumSpendable = 0
+		}
+		var spendable *float64
+		if json.Unmarshal(raw.Spendable, &spendable) != nil || spendable == nil || *spendable < 0 || *spendable > maximumSpendable {
+			return Balance{}, fail("SPACEXCARD_CONTRACT_DRIFT", "SpaceX Card spendable balance is invalid", true)
+		}
+		available = *spendable
+	} else if len(raw.ReserveAmount) != 0 || len(raw.ReserveEnabled) != 0 {
+		return Balance{}, fail("SPACEXCARD_CONTRACT_DRIFT", "SpaceX Card reserve response is missing spendable balance", true)
+	} else if available < 0 {
+		return Balance{}, fail("SPACEXCARD_CONTRACT_DRIFT", "SpaceX Card legacy balance is negative without spendable evidence", true)
+	}
+	return Balance{Balance: available, Currency: raw.Currency}, nil
 }
 
 func (c *SpaceXClient) OpenCard(ctx context.Context, input OpenCardInput, key string) (OpenCardResult, error) {

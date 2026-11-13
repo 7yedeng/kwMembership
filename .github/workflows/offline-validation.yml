@@ -1,0 +1,180 @@
+name: Offline validation
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: offline-validation-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  go:
+    if: github.repository == '7yedeng/kwMembership'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - name: Check out the reviewed source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Set up Go from go.mod
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Download public module dependencies
+        run: go mod download
+      - name: Run all Go fixture tests
+        env:
+          GOPROXY: 'off'
+          GOTOOLCHAIN: local
+        run: go test -count=1 ./...
+
+  python-browser:
+    if: github.repository == '7yedeng/kwMembership'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - name: Check out the reviewed source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - name: Install the pinned executor test dependency
+        run: python -m pip install --disable-pip-version-check -r python_executor/requirements.txt
+      - name: Install the matching official Chromium headless shell
+        run: python -m playwright install --with-deps --only-shell chromium
+      - name: Check the test runtimes
+        run: |
+          python --version
+          python -m playwright --version
+          node --version
+      - name: Run offline Python and real browser fixture tests without skips
+        env:
+          KWMEMBERSHIP_REQUIRE_BROWSER_TESTS: '1'
+        run: |
+          python - <<'PY'
+          import sys
+          import unittest
+
+          suite = unittest.defaultTestLoader.discover('python_executor/tests')
+          result = unittest.TextTestRunner(verbosity=2).run(suite)
+          if result.skipped:
+              print('Offline validation requires every test to execute; skipped tests fail CI.', file=sys.stderr)
+          raise SystemExit(0 if result.wasSuccessful() and not result.skipped else 1)
+          PY
+
+  chromium-headed-runtime:
+    if: github.repository == '7yedeng/kwMembership'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - name: Check out the reviewed source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Set up Go from go.mod
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - name: Restore the official Chrome package installation
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          executable = Path('/opt/google/chrome/chrome')
+          metadata = executable.stat()
+          print({'vendor_chrome_before_reinstall': {
+              'uid': metadata.st_uid, 'gid': metadata.st_gid,
+              'mode': oct(metadata.st_mode & 0o7777),
+              'is_symlink': executable.is_symlink()}})
+          PY
+          sudo apt-get update
+          sudo apt-get install --reinstall --yes google-chrome-stable
+      - name: Verify vendor bytes and tighten executable permissions
+        run: |
+          python - <<'PY'
+          import hashlib
+          from pathlib import Path
+
+          executable = Path('/opt/google/chrome/chrome')
+          manifest = Path('/var/lib/dpkg/info/google-chrome-stable.md5sums')
+          if executable.is_symlink() or executable.stat().st_uid != 0:
+              raise SystemExit('VENDOR_CHROME_PATH_UNTRUSTED')
+          if manifest.is_symlink() or manifest.stat().st_uid != 0 or manifest.stat().st_mode & 0o022:
+              raise SystemExit('VENDOR_PACKAGE_MANIFEST_UNTRUSTED')
+          expected = [line.split()[0] for line in manifest.read_text().splitlines()
+                      if line.split()[1:] == ['opt/google/chrome/chrome']]
+          with executable.open('rb') as stream:
+              actual = hashlib.file_digest(stream, 'md5').hexdigest()
+          if len(expected) != 1 or actual != expected[0]:
+              raise SystemExit('VENDOR_CHROME_PACKAGE_CHECKSUM_MISMATCH')
+          print('VENDOR_CHROME_PACKAGE_BYTES_VERIFIED')
+          PY
+          sudo chmod go-w /opt/google/chrome/chrome
+      - name: Inspect the vendor-installed full Chrome runtime
+        run: |
+          command -v Xvfb
+          command -v xvfb-run
+          dpkg-query -W -f='${Status}\n' google-chrome-stable
+          dpkg-query -S /opt/google/chrome/chrome
+          test -f /etc/apparmor.d/chrome
+          /opt/google/chrome/chrome --version
+      - name: Resolve the existing vendor browser executable
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+
+          # Use the original package installation and its existing OS policy.
+          # Never move a downloaded build into this path or change the policy.
+          executable = Path('/opt/google/chrome/chrome')
+          if not executable.is_file() or executable.is_symlink() or not os.access(executable, os.X_OK):
+              raise SystemExit('VENDOR_CHROME_EXECUTABLE_MISSING')
+          metadata = executable.stat()
+          print({'vendor_chrome_after_reinstall': {
+              'uid': metadata.st_uid, 'gid': metadata.st_gid,
+              'mode': oct(metadata.st_mode & 0o7777)}})
+          if metadata.st_uid != 0 or metadata.st_mode & 0o022:
+              raise SystemExit('VENDOR_CHROME_OWNERSHIP_INVALID')
+          with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as environment:
+              environment.write(f'KWMEMBERSHIP_CHROME_RUNTIME_PATH={executable}\n')
+          PY
+      - name: Download public module dependencies
+        run: go mod download
+      - name: Verify the actual Go headed launch under Xvfb
+        env:
+          KWMEMBERSHIP_REQUIRE_CHROME_RUNTIME_TESTS: '1'
+          GOPROXY: 'off'
+          GOTOOLCHAIN: local
+        run: |
+          set -euo pipefail
+          xvfb-run -a -s '-screen 0 1280x900x24' \
+            go test -count=1 -timeout=45s -run '^TestVerifyChromeHeadedRuntime$' \
+            -json ./internal/checkout | tee "$RUNNER_TEMP/chromium-runtime-results.jsonl"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          events = [json.loads(line) for line in
+                    (Path(os.environ['RUNNER_TEMP']) / 'chromium-runtime-results.jsonl').read_text().splitlines()]
+          completed = [event for event in events
+                       if event.get('Test') == 'TestVerifyChromeHeadedRuntime'
+                       and event.get('Action') in ('pass', 'fail', 'skip')]
+          if len(completed) != 1 or completed[0]['Action'] != 'pass':
+              raise SystemExit('FULL_CHROMIUM_RUNTIME_TEST_DID_NOT_PASS')
+          print('FULL_CHROMIUM_HEADED_RUNTIME_PASSED')
+          PY

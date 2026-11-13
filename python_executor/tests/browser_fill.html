@@ -1,0 +1,115 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Synthetic offline checkout form fixture</title>
+<!-- Local test content only. No account, real card, payment endpoint, or SDK. -->
+<form id="fixture" autocomplete="off"></form>
+<script>
+(() => {
+  const form = document.querySelector('#fixture');
+  const scenario = new URL(location.href).searchParams.get('scenario') || 'formatted';
+  window.syntheticFixture = {ready: false, writes: 0, replaced: false, rafRequested: false, submitted: false};
+  form.addEventListener('input', () => window.syntheticFixture.writes++);
+  form.addEventListener('submit', event => { event.preventDefault(); window.syntheticFixture.submitted = true; });
+  const input = (id, required = true) => {
+    const element = document.createElement('input');
+    element.id = id;
+    element.type = 'text';
+    element.required = required;
+    form.append(element);
+    return element;
+  };
+  const select = (id, values) => {
+    const element = document.createElement('select');
+    element.id = id;
+    element.required = true;
+    for (const value of values) {
+      const option = document.createElement('option');
+      option.value = value;
+      option.textContent = value;
+      element.append(option);
+    }
+    form.append(element);
+    return element;
+  };
+  const card = (separateExpiry = false) => {
+    input('payment-numberInput');
+    if (separateExpiry) {
+      select('payment-expiryMonthInput', ['01', '02']);
+      select('payment-expiryYearInput', ['29', '30']);
+    } else {
+      input('payment-expiryInput');
+    }
+    input('payment-cvcInput');
+  };
+  const billing = (countryValues = ['PH', 'US']) => {
+    input('billingAddress-nameInput');
+    select('billingAddress-countryInput', countryValues);
+    input('billingAddress-postalCodeInput');
+  };
+  const frame = (name, origin, mode, hidden = false) => {
+    const element = document.createElement('iframe');
+    element.name = name;
+    element.src = origin + '/v3/offline-fixture?scenario=' + mode;
+    if (hidden) element.style.display = 'none';
+    document.body.append(element);
+  };
+
+  if (scenario === 'empty') {
+    // A hidden utility frame may never receive an animation callback.
+    window.requestAnimationFrame = () => { window.syntheticFixture.rafRequested = true; return 0; };
+  } else if (scenario === 'card-only') {
+    card();
+  } else if (scenario === 'optional-only-invalid') {
+    input('billingAddress-stateInput', false).setAttribute('aria-invalid', 'true');
+  } else if (scenario === 'frames') {
+    billing();
+    frame('synthetic-card', 'https://js.stripe.com', 'card-only');
+    frame('synthetic-foreign', 'https://untrusted.example', 'foreign-form');
+    frame('synthetic-empty', 'https://js.stripe.com', 'empty', true);
+  } else {
+    card(scenario === 'normalized-selects');
+    billing(scenario === 'unsupported-select' ? ['US'] : ['PH', 'US']);
+    if (scenario === 'formatted') {
+      document.querySelector('#payment-numberInput').addEventListener('input', event => {
+        event.target.value = event.target.value.replace(/\s/g, '').replace(/(.{4})(?=.)/g, '$1 ');
+      });
+      document.querySelector('#payment-expiryInput').addEventListener('input', event => { event.target.value = '01 / 2030'; });
+    } else if (scenario === 'sync-reset') {
+      document.querySelector('#payment-cvcInput').addEventListener('input', event => { event.target.value = ''; });
+    } else if (scenario === 'render-replacement') {
+      const original = document.querySelector('#payment-cvcInput');
+      original.addEventListener('input', () => requestAnimationFrame(() => {
+        // Models a controlled component replacing an unaccepted input on render.
+        // This is a real DOM mutation, not a claim of React integration coverage.
+        const replacement = original.cloneNode(true);
+        replacement.value = '';
+        original.replaceWith(replacement);
+        window.syntheticFixture.replaced = true;
+      }), {once: true});
+    } else if (scenario === 'native-invalid') {
+      document.querySelector('#billingAddress-postalCodeInput').pattern = '[1-9]{5}';
+    } else if (scenario === 'optional-invalid') {
+      input('billingAddress-stateInput', false).setAttribute('aria-invalid', 'true');
+    } else if (scenario === 'line2' || scenario === 'line2-truncated') {
+      const line2 = input('billingAddress-line2Input', false);
+      if (scenario === 'line2-truncated') {
+        line2.addEventListener('input', event => { event.target.value = event.target.value.slice(0, 3); });
+      }
+    } else if (scenario === 'optional-state-postal') {
+      input('billingAddress-stateInput', false).value = 'Unverified default';
+      document.querySelector('#billingAddress-postalCodeInput').required = false;
+    } else if (scenario === 'required-state') {
+      input('billingAddress-stateInput', true);
+    } else if (scenario === 'aria-required-state') {
+      input('billingAddress-stateInput', false).setAttribute('aria-required', 'true');
+    } else if (scenario === 'no-state-postal') {
+      document.querySelector('#billingAddress-postalCodeInput').remove();
+    } else if (scenario === 'full-with-invalid-frame') {
+      frame('synthetic-invalid', 'https://js.stripe.com', 'optional-only-invalid');
+    } else if (scenario === 'full-with-empty-frame') {
+      frame('synthetic-empty', 'https://js.stripe.com', 'empty', true);
+    }
+  }
+  window.syntheticFixture.ready = true;
+})();
+</script>

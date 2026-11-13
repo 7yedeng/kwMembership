@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import unittest
+from unittest import mock
 
 from python_executor.client import ExecutorAPIError, ExecutorLease
 from python_executor.live import (
     LiveExecutor,
+    _allowed_fill_origin,
     _classify,
+    _fill_frames,
     _resolve_checkout_entry,
     route_template,
     session_cookies,
@@ -30,6 +33,96 @@ def lease(stage: str = "plus", target_tier: str = "plus") -> ExecutorLease:
 
 
 class LiveContractTest(unittest.TestCase):
+    def test_fill_origin_requires_exact_https_origin_without_userinfo(self) -> None:
+        for value in (
+            "https://chatgpt.com/checkout/test", "https://pay.openai.com/pay/test",
+            "https://js.stripe.com/v3/element", "https://PAY.OPENAI.COM:443/pay/test",
+        ):
+            with self.subTest(value=value):
+                self.assertTrue(_allowed_fill_origin(value))
+        for value in (
+            "https://pay.openai.com.evil.example/", "https://user@pay.openai.com/pay/test",
+            "https://pay.openai.com:443@evil.example/", "http://pay.openai.com/pay/test",
+            "https://pay.openai.com:8443/pay/test", "https://pay.openai.com:invalid/pay/test",
+            "https://pay.openai.com./pay/test", "https://pay.openai.com\n/pay/test",
+            "blob:https://pay.openai.com/test", "about:blank", "", None,
+        ):
+            with self.subTest(value=value):
+                self.assertFalse(_allowed_fill_origin(value))
+
+    def test_disallowed_frame_never_receives_payment_material(self) -> None:
+        foreign = mock.Mock(url="https://foreign.example/frame")
+        allowed = mock.Mock(url="https://pay.openai.com/pay/test")
+        allowed.evaluate.return_value = self._filled_result()
+        _fill_frames(mock.Mock(frames=[foreign, allowed]), {})
+        foreign.evaluate.assert_not_called()
+        allowed.evaluate.assert_called_once()
+
+    def test_line2_is_forwarded_and_nonempty_line2_cannot_be_dropped(self) -> None:
+        for key in ("Line2", "line2"):
+            with self.subTest(key=key):
+                allowed = mock.Mock(url="https://pay.openai.com/pay/test")
+                allowed.evaluate.return_value = self._filled_result()
+                material = {"billing": {key: "Synthetic suite 2"}}
+                with self.assertRaises(ExecutorAPIError) as raised:
+                    _fill_frames(mock.Mock(frames=[allowed]), material)
+                self.assertEqual(raised.exception.code, "PAYMENT_FIELDS_NOT_FILLED")
+                self.assertEqual(allowed.evaluate.call_args.args[1]["billingLine2"], "Synthetic suite 2")
+                result = self._filled_result()
+                result["filled"].append("billingLine2")
+                allowed.evaluate.return_value = result
+                _fill_frames(mock.Mock(frames=[allowed]), material)
+
+    def test_postal_and_state_are_not_unconditionally_required_by_aggregation(self) -> None:
+        allowed = mock.Mock(url="https://pay.openai.com/pay/test")
+        result = self._filled_result()
+        result["filled"].remove("billingPostal")
+        allowed.evaluate.return_value = result
+        _fill_frames(mock.Mock(frames=[allowed]), {})
+
+    def test_present_rejected_optional_field_stops_checkout_before_any_action(self) -> None:
+        frame = mock.Mock(url="https://pay.openai.com/pay/test")
+        frame.evaluate.return_value = self._filled_result(rejected=["billingState"])
+        client = mock.Mock()
+        facts = {"stateId": "PAYMENT_FINAL_READY", "structuralHash": "fixture-snapshot"}
+        with self.assertRaises(ExecutorAPIError) as raised:
+            LiveExecutor()._checkout(client, lease(), {}, mock.Mock(frames=[frame]), 0, initial=facts)
+        self.assertEqual(raised.exception.code, "PAYMENT_FIELDS_NOT_FILLED")
+        client.prepare_action.assert_not_called()
+        client.activate_action.assert_not_called()
+        client.report_submitted.assert_not_called()
+
+    def test_failed_trusted_frame_cannot_be_hidden_by_another_filled_frame(self) -> None:
+        filled = mock.Mock(url="https://pay.openai.com/pay/test")
+        filled.evaluate.return_value = self._filled_result()
+        unavailable = mock.Mock(url="https://js.stripe.com/v3/element")
+        unavailable.evaluate.side_effect = RuntimeError("synthetic-sensitive-field-marker")
+        with self.assertRaises(ExecutorAPIError) as raised:
+            _fill_frames(mock.Mock(frames=[filled, unavailable]), {})
+        self.assertEqual(raised.exception.code, "PAYMENT_FIELDS_NOT_FILLED")
+        self.assertNotIn("synthetic-sensitive-field-marker", str(raised.exception))
+        self.assertTrue(raised.exception.__suppress_context__)
+
+    def test_refused_or_malformed_fill_report_never_counts_as_filled(self) -> None:
+        for result in (
+            {"accepted": False, "filled": [], "rejected": []},
+            {"accepted": True, "filled": ["cardNumber"]},
+            {"accepted": True, "filled": ["unexpected-field"], "rejected": []},
+            {"accepted": True, "filled": "cardNumber", "rejected": []},
+            None,
+        ):
+            frame = mock.Mock(url="https://pay.openai.com/pay/test")
+            frame.evaluate.return_value = result
+            with self.subTest(result=result), self.assertRaises(ExecutorAPIError):
+                _fill_frames(mock.Mock(frames=[frame]), {})
+
+    def _filled_result(self, rejected: list[str] | None = None) -> dict[str, object]:
+        return {
+            "accepted": True,
+            "filled": ["cardNumber", "cvc", "expiry", "billingName", "billingCountry", "billingPostal"],
+            "rejected": rejected or [],
+        }
+
     def test_chunks_session_cookie_like_go_provider(self) -> None:
         cookies = session_cookies(
             {"sessionToken": "x" * 4400, "expires": "2026-08-14T00:00:00Z"},
@@ -90,6 +183,10 @@ class LiveContractTest(unittest.TestCase):
             "controls": {"submit": "payment-submit"},
         }
         self.assertEqual(_classify(plus, lease(), "checkout"), "PAYMENT_FINAL_READY")
+        without_state_or_postal = {**plus, "fields": {**fields, "billingLine1": True, "billingCity": True}}
+        without_state_or_postal["fields"].pop("billingPostal")
+        self.assertEqual(_classify(without_state_or_postal, lease(), "checkout"), "PAYMENT_FINAL_READY")
+        self.assertEqual(_classify({**without_state_or_postal, "country": "GB"}, lease(), "checkout"), "UNKNOWN_PAYMENT_STATE")
 
         selection = {
             "origin": "https://chatgpt.com",
@@ -154,6 +251,139 @@ class LiveContractTest(unittest.TestCase):
         )
         self.assertTrue(result["continue"])
         self.assertEqual(calls, ["prepare", "activate", "click", "result"])
+
+    def test_dispatched_click_timeout_reports_unknown_without_another_click(self) -> None:
+        for report_unavailable in (False, True):
+            with self.subTest(report_unavailable=report_unavailable):
+                calls: list[str] = []
+
+                class Client:
+                    def prepare_action(self, *_args: object) -> dict[str, str]:
+                        calls.append("prepare")
+                        return {"permitId": "permit-1"}
+
+                    def activate_action(self, *_args: object) -> dict[str, bool]:
+                        calls.append("activate")
+                        return {"activated": True}
+
+                    def action_result(self, _lease: object, _permit: str, outcome: str) -> dict[str, bool]:
+                        calls.append("result:" + outcome)
+                        if report_unavailable:
+                            raise ExecutorAPIError("EXECUTOR_REQUEST_UNAVAILABLE", 503)
+                        return {"continue": False}
+
+                class Locator:
+                    def count(self) -> int:
+                        return 1
+
+                    def is_visible(self) -> bool:
+                        return True
+
+                    def is_enabled(self) -> bool:
+                        return True
+
+                    def click(self, timeout: int) -> None:
+                        calls.append("click")
+                        # Simulate the browser receiving input, then losing
+                        # the navigation acknowledgement. A later click could
+                        # be a second real payment and must never happen.
+                        if calls.count("click") == 1:
+                            raise TimeoutError("simulated timeout after dispatch")
+
+                class Frame:
+                    url = "https://pay.openai.com/pay/test"
+
+                    def locator(self, _selector: str) -> Locator:
+                        return Locator()
+
+                class Page:
+                    frames = [Frame(), Frame()]
+
+                with self.assertRaises(ExecutorAPIError) as raised:
+                    LiveExecutor()._activate(
+                        Client(), lease(), Page(), {"stateId": "PAYMENT_FINAL_READY"}, "submit", "payment-submit"
+                    )
+                self.assertEqual(raised.exception.code, "PERMIT_ACTIVATION_UNCERTAIN")
+                self.assertEqual(calls, ["prepare", "activate", "click", "result:unknown"])
+
+    def test_preclick_lookup_failure_can_use_another_locator(self) -> None:
+        calls: list[str] = []
+
+        class Client:
+            def prepare_action(self, *_args: object) -> dict[str, str]:
+                return {"permitId": "permit-1"}
+
+            def activate_action(self, *_args: object) -> dict[str, bool]:
+                return {"activated": True}
+
+            def action_result(self, _lease: object, _permit: str, outcome: str) -> dict[str, bool]:
+                calls.append("result:" + outcome)
+                return {"continue": True}
+
+        class Locator:
+            def __init__(self, missing: bool) -> None:
+                self.missing = missing
+
+            def count(self) -> int:
+                if self.missing:
+                    calls.append("lookup-unavailable")
+                    raise RuntimeError("detached during lookup; no input dispatched")
+                return 1
+
+            def is_visible(self) -> bool:
+                return True
+
+            def is_enabled(self) -> bool:
+                return True
+
+            def click(self, timeout: int) -> None:
+                calls.append("click")
+
+        class Frame:
+            url = "https://pay.openai.com/pay/test"
+
+            def locator(self, selector: str) -> Locator:
+                return Locator(missing=selector == "#payment-submit")
+
+        class Page:
+            frames = [Frame()]
+
+        result = LiveExecutor()._activate(
+            Client(), lease(), Page(), {"stateId": "PAYMENT_FINAL_READY"}, "submit", "payment-submit"
+        )
+        self.assertTrue(result["continue"])
+        self.assertEqual(calls, ["lookup-unavailable", "click", "result:clicked"])
+
+    def test_no_click_candidate_is_distinct_from_unknown_click_outcome(self) -> None:
+        client = mock.Mock()
+        client.prepare_action.return_value = {"permitId": "permit-1"}
+        page = mock.Mock(frames=[])
+        command = lease()
+        with self.assertRaises(ExecutorAPIError) as raised:
+            LiveExecutor()._activate(
+                client, command, page, {"stateId": "PAYMENT_FINAL_READY"}, "submit", "payment-submit"
+            )
+        self.assertEqual(raised.exception.code, "PERMIT_ACTIVATION_UNCERTAIN")
+        client.action_result.assert_called_once_with(command, "permit-1", "not-clicked")
+
+    def test_checkout_reports_only_submission_after_submit_activation(self) -> None:
+        client = mock.Mock()
+        executor = LiveExecutor()
+        command = lease()
+        facts = {
+            "stateId": "PAYMENT_FINAL_READY", "structuralHash": "page-snapshot",
+            "controls": {"submit": "payment-submit"},
+        }
+        page = object()
+        with (
+            mock.patch("python_executor.live._fill_frames"),
+            mock.patch.object(executor, "_wait_facts", return_value=facts),
+            mock.patch.object(executor, "_activate", return_value={"continue": False}) as activate,
+        ):
+            executor._checkout(client, command, {}, page, 0, initial=facts)
+        activate.assert_called_once_with(client, command, page, facts, "submit", "payment-submit")
+        client.report_submitted.assert_called_once_with(command, facts)
+        client.report.assert_not_called()
 
 
 if __name__ == "__main__":

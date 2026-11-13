@@ -1,0 +1,4287 @@
+{
+  "id": "kwmembership-sql-consumer",
+  "version": 1,
+  "matrixBaseline": "0a28f6dbb0e315479980283de81ed5e9db762300",
+  "reviewedSourceCommit": "3a3b0f5937fe2da4b8a3b2db05ce9d106870b96e",
+  "scope": "metadata-only; known SQL requirements, not a production migration or readiness certificate",
+  "tables": [
+    {
+      "name": "activation_jobs",
+      "requiredWhen": "always",
+      "sources": [
+        "internal/processor/session_recovery.go"
+      ],
+      "columns": [
+        {
+          "name": "id",
+          "requiredWhen": "observed_only",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture"
+        },
+        {
+          "name": "order_id",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture"
+        },
+        {
+          "name": "status",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/session_recovery.go:106"
+          ]
+        },
+        {
+          "name": "last_error",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/session_recovery.go:106"
+          ]
+        },
+        {
+          "name": "locked_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/session_recovery.go:106"
+          ]
+        },
+        {
+          "name": "locked_by",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/session_recovery.go:106"
+          ]
+        },
+        {
+          "name": "updated_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/session_recovery.go:106"
+          ]
+        }
+      ],
+      "unique": [],
+      "unknown": [
+        "UPSTREAM_TABLE_CONSTRAINTS_UNVERIFIED"
+      ]
+    },
+    {
+      "name": "admin_audit_logs",
+      "requiredWhen": "always",
+      "sources": [
+        "internal/processor/intake.go"
+      ],
+      "columns": [
+        {
+          "name": "id",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/intake.go:120"
+          ]
+        },
+        {
+          "name": "action",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/intake.go:120"
+          ]
+        },
+        {
+          "name": "actor",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/intake.go:120"
+          ]
+        },
+        {
+          "name": "resource_type",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/intake.go:120"
+          ]
+        },
+        {
+          "name": "resource_id",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/intake.go:120"
+          ]
+        },
+        {
+          "name": "detail",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/intake.go:120"
+          ]
+        },
+        {
+          "name": "created_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/intake.go:120"
+          ]
+        }
+      ],
+      "unique": [],
+      "unknown": [
+        "UPSTREAM_TABLE_CONSTRAINTS_UNVERIFIED"
+      ]
+    },
+    {
+      "name": "automatic_checkout_daily_usage",
+      "requiredWhen": "always",
+      "sources": [
+        "internal/processor/payment.go",
+        "internal/processor/session_recovery.go"
+      ],
+      "columns": [
+        {
+          "name": "scope_id",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/payment.go:1845"
+          ]
+        },
+        {
+          "name": "business_date",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/payment.go:1845"
+          ]
+        },
+        {
+          "name": "order_units",
+          "requiredWhen": "always",
+          "typeHint": "INTEGER",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/payment.go:1845",
+            "internal/processor/session_recovery.go:259"
+          ]
+        },
+        {
+          "name": "risk_reserved_usd",
+          "requiredWhen": "always",
+          "typeHint": "REAL",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/payment.go:1845",
+            "internal/processor/session_recovery.go:259"
+          ]
+        },
+        {
+          "name": "updated_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/payment.go:1845",
+            "internal/processor/session_recovery.go:259"
+          ]
+        }
+      ],
+      "unique": [
+        {
+          "columns": [
+            "scope_id",
+            "business_date"
+          ],
+          "requiredWhen": "always",
+          "source": "internal/processor/payment.go"
+        }
+      ],
+      "unknown": [
+        "UPSTREAM_TABLE_CONSTRAINTS_UNVERIFIED"
+      ]
+    },
+    {
+      "name": "automatic_checkout_quota_reservations",
+      "requiredWhen": "always",
+      "sources": [
+        "internal/processor/checkout.go",
+        "internal/processor/payment.go",
+        "internal/processor/session_recovery.go"
+      ],
+      "columns": [
+        {
+          "name": "id",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/payment.go:1839"
+          ]
+        },
+        {
+          "name": "scope_id",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/payment.go:1839"
+          ]
+        },
+        {
+          "name": "fulfillment_id",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/payment.go:1839"
+          ]
+        },
+        {
+          "name": "business_date",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/payment.go:1839"
+          ]
+        },
+        {
+          "name": "order_units",
+          "requiredWhen": "always",
+          "typeHint": "INTEGER",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/payment.go:1839"
+          ]
+        },
+        {
+          "name": "risk_reserved_usd",
+          "requiredWhen": "always",
+          "typeHint": "REAL",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/payment.go:1839"
+          ]
+        },
+        {
+          "name": "state",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/payment.go:1839",
+            "internal/processor/session_recovery.go:264"
+          ]
+        },
+        {
+          "name": "released_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/session_recovery.go:264"
+          ]
+        },
+        {
+          "name": "reserved_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "inferred",
+          "writeSources": [
+            "internal/processor/payment.go:1839"
+          ]
+        }
+      ],
+      "unique": [],
+      "unknown": [
+        "UPSTREAM_TABLE_CONSTRAINTS_UNVERIFIED"
+      ]
+    },
+    {
+      "name": "automatic_checkout_scopes",
+      "requiredWhen": "always",
+      "sources": [
+        "internal/processor/checkout.go",
+        "internal/processor/intake.go",
+        "internal/processor/payment.go"
+      ],
+      "columns": [
+        {
+          "name": "id",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture"
+        },
+        {
+          "name": "site_id",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture"
+        },
+        {
+          "name": "product_id",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture"
+        },
+        {
+          "name": "tier",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture"
+        },
+        {
+          "name": "status",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/payment.go:1759"
+          ]
+        },
+        {
+          "name": "activated_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture"
+        },
+        {
+          "name": "adapter_version",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "inferred"
+        },
+        {
+          "name": "price_contract_id",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "inferred"
+        },
+        {
+          "name": "revision",
+          "requiredWhen": "always",
+          "typeHint": "INTEGER",
+          "typeEvidence": "inferred"
+        },
+        {
+          "name": "scope_key",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "inferred"
+        },
+        {
+          "name": "daily_order_limit",
+          "requiredWhen": "always",
+          "typeHint": "INTEGER",
+          "typeEvidence": "inferred"
+        },
+        {
+          "name": "daily_risk_limit_usd",
+          "requiredWhen": "always",
+          "typeHint": "REAL",
+          "typeEvidence": "inferred"
+        }
+      ],
+      "unique": [],
+      "unknown": [
+        "UPSTREAM_TABLE_CONSTRAINTS_UNVERIFIED"
+      ]
+    },
+    {
+      "name": "card_capacity_reservations",
+      "requiredWhen": "always",
+      "sources": [
+        "internal/executor/bridge.go",
+        "internal/processor/eligibility.go",
+        "internal/processor/inventory.go",
+        "internal/processor/payment.go",
+        "internal/processor/reconciliation.go",
+        "internal/processor/session_recovery.go"
+      ],
+      "columns": [
+        {
+          "name": "id",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/payment.go:1530",
+            "internal/processor/payment.go:1588"
+          ]
+        },
+        {
+          "name": "state",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/payment.go:1530",
+            "internal/processor/payment.go:1588",
+            "internal/processor/reconciliation.go:612",
+            "internal/processor/reconciliation.go:645",
+            "internal/processor/reconciliation.go:680",
+            "internal/processor/session_recovery.go:98"
+          ]
+        },
+        {
+          "name": "card_id",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/payment.go:1530",
+            "internal/processor/payment.go:1588",
+            "internal/processor/payment.go:2885"
+          ]
+        },
+        {
+          "name": "fulfillment_id",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/payment.go:1530",
+            "internal/processor/payment.go:1588"
+          ]
+        },
+        {
+          "name": "target_lane",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/payment.go:1530",
+            "internal/processor/payment.go:1588"
+          ]
+        },
+        {
+          "name": "released_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/reconciliation.go:680",
+            "internal/processor/session_recovery.go:98"
+          ]
+        },
+        {
+          "name": "release_evidence_revision",
+          "requiredWhen": "always",
+          "typeHint": "INTEGER",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/reconciliation.go:680",
+            "internal/processor/session_recovery.go:98"
+          ]
+        },
+        {
+          "name": "planned_product_code",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/payment.go:1530",
+            "internal/processor/payment.go:1588"
+          ]
+        },
+        {
+          "name": "slot_index",
+          "requiredWhen": "always",
+          "typeHint": "INTEGER",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/payment.go:1530",
+            "internal/processor/payment.go:1588",
+            "internal/processor/payment.go:2885"
+          ]
+        },
+        {
+          "name": "reserved_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/payment.go:1530",
+            "internal/processor/payment.go:1588"
+          ]
+        },
+        {
+          "name": "consumed_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/reconciliation.go:612"
+          ]
+        },
+        {
+          "name": "provider_key",
+          "requiredWhen": "observed_only",
+          "typeHint": "TEXT",
+          "typeEvidence": "inferred",
+          "writeSources": [
+            "internal/processor/payment.go:1530",
+            "internal/processor/payment.go:1588"
+          ]
+        }
+      ],
+      "unique": [],
+      "unknown": [
+        "UPSTREAM_TABLE_CONSTRAINTS_UNVERIFIED"
+      ]
+    },
+    {
+      "name": "card_inventory_run_items",
+      "requiredWhen": "always",
+      "sources": [
+        "internal/processor/inventory.go"
+      ],
+      "columns": [
+        {
+          "name": "run_id",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/inventory.go:244",
+            "internal/processor/inventory.go:406"
+          ]
+        },
+        {
+          "name": "upstream_card_id",
+          "requiredWhen": "always",
+          "typeHint": "INTEGER",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/inventory.go:244",
+            "internal/processor/inventory.go:406"
+          ]
+        },
+        {
+          "name": "status",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/inventory.go:244",
+            "internal/processor/inventory.go:406",
+            "internal/processor/inventory.go:651",
+            "internal/processor/inventory.go:752"
+          ]
+        },
+        {
+          "name": "attempt_count",
+          "requiredWhen": "always",
+          "typeHint": "INTEGER",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/inventory.go:244",
+            "internal/processor/inventory.go:406",
+            "internal/processor/inventory.go:752"
+          ]
+        },
+        {
+          "name": "updated_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/inventory.go:244",
+            "internal/processor/inventory.go:406",
+            "internal/processor/inventory.go:651",
+            "internal/processor/inventory.go:752"
+          ]
+        },
+        {
+          "name": "error_code",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "inferred",
+          "writeSources": [
+            "internal/processor/inventory.go:651",
+            "internal/processor/inventory.go:752"
+          ]
+        },
+        {
+          "name": "next_retry_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "inferred",
+          "writeSources": [
+            "internal/processor/inventory.go:651",
+            "internal/processor/inventory.go:752"
+          ]
+        }
+      ],
+      "unique": [],
+      "unknown": [
+        "UPSTREAM_TABLE_CONSTRAINTS_UNVERIFIED",
+        "INSERT_IGNORE_IDEMPOTENCY_CONSTRAINT_UNVERIFIED"
+      ]
+    },
+    {
+      "name": "card_inventory_runs",
+      "requiredWhen": "always",
+      "sources": [
+        "internal/processor/inventory.go"
+      ],
+      "columns": [
+        {
+          "name": "id",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/inventory.go:233",
+            "internal/processor/inventory.go:237",
+            "internal/processor/inventory.go:314",
+            "internal/processor/inventory.go:340"
+          ]
+        },
+        {
+          "name": "status",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/inventory.go:233",
+            "internal/processor/inventory.go:237",
+            "internal/processor/inventory.go:314",
+            "internal/processor/inventory.go:340",
+            "internal/processor/inventory.go:424",
+            "internal/processor/inventory.go:723"
+          ]
+        },
+        {
+          "name": "next_page",
+          "requiredWhen": "always",
+          "typeHint": "INTEGER",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/inventory.go:233",
+            "internal/processor/inventory.go:237",
+            "internal/processor/inventory.go:314",
+            "internal/processor/inventory.go:340",
+            "internal/processor/inventory.go:424"
+          ]
+        },
+        {
+          "name": "total_cards",
+          "requiredWhen": "always",
+          "typeHint": "INTEGER",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/inventory.go:233",
+            "internal/processor/inventory.go:237",
+            "internal/processor/inventory.go:314",
+            "internal/processor/inventory.go:340",
+            "internal/processor/inventory.go:424"
+          ]
+        },
+        {
+          "name": "discovered_cards",
+          "requiredWhen": "always",
+          "typeHint": "INTEGER",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/inventory.go:233",
+            "internal/processor/inventory.go:237",
+            "internal/processor/inventory.go:314",
+            "internal/processor/inventory.go:340",
+            "internal/processor/inventory.go:424"
+          ]
+        },
+        {
+          "name": "last_error_code",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/inventory.go:424",
+            "internal/processor/inventory.go:723",
+            "internal/processor/inventory.go:766",
+            "internal/processor/inventory.go:786"
+          ]
+        },
+        {
+          "name": "updated_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/inventory.go:144",
+            "internal/processor/inventory.go:180",
+            "internal/processor/inventory.go:233",
+            "internal/processor/inventory.go:237",
+            "internal/processor/inventory.go:314",
+            "internal/processor/inventory.go:340",
+            "internal/processor/inventory.go:424",
+            "internal/processor/inventory.go:687",
+            "internal/processor/inventory.go:723",
+            "internal/processor/inventory.go:766",
+            "internal/processor/inventory.go:786"
+          ]
+        },
+        {
+          "name": "mode",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/inventory.go:233",
+            "internal/processor/inventory.go:237",
+            "internal/processor/inventory.go:314",
+            "internal/processor/inventory.go:340"
+          ]
+        },
+        {
+          "name": "processed_cards",
+          "requiredWhen": "always",
+          "typeHint": "INTEGER",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/inventory.go:233",
+            "internal/processor/inventory.go:237",
+            "internal/processor/inventory.go:314",
+            "internal/processor/inventory.go:340",
+            "internal/processor/inventory.go:687"
+          ]
+        },
+        {
+          "name": "held_cards",
+          "requiredWhen": "always",
+          "typeHint": "INTEGER",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/inventory.go:233",
+            "internal/processor/inventory.go:237",
+            "internal/processor/inventory.go:314",
+            "internal/processor/inventory.go:340",
+            "internal/processor/inventory.go:687"
+          ]
+        },
+        {
+          "name": "started_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/inventory.go:233",
+            "internal/processor/inventory.go:237",
+            "internal/processor/inventory.go:314",
+            "internal/processor/inventory.go:340"
+          ]
+        },
+        {
+          "name": "completed_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/inventory.go:723"
+          ]
+        },
+        {
+          "name": "locked_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/inventory.go:144",
+            "internal/processor/inventory.go:180",
+            "internal/processor/inventory.go:723"
+          ]
+        },
+        {
+          "name": "locked_by",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/inventory.go:144",
+            "internal/processor/inventory.go:180",
+            "internal/processor/inventory.go:723"
+          ]
+        },
+        {
+          "name": "provider_key",
+          "requiredWhen": "platform_catalog",
+          "typeHint": "TEXT",
+          "typeEvidence": "inferred",
+          "writeSources": [
+            "internal/processor/inventory.go:233",
+            "internal/processor/inventory.go:340"
+          ]
+        }
+      ],
+      "unique": [],
+      "unknown": [
+        "UPSTREAM_TABLE_CONSTRAINTS_UNVERIFIED"
+      ]
+    },
+    {
+      "name": "card_price_signals",
+      "requiredWhen": "always",
+      "sources": [
+        "internal/processor/eligibility.go",
+        "internal/processor/inventory.go",
+        "internal/processor/payment.go"
+      ],
+      "columns": [
+        {
+          "name": "card_id",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/inventory.go:626"
+          ]
+        },
+        {
+          "name": "tier",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/inventory.go:626"
+          ]
+        },
+        {
+          "name": "found",
+          "requiredWhen": "always",
+          "typeHint": "INTEGER",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/inventory.go:626"
+          ]
+        },
+        {
+          "name": "amount",
+          "requiredWhen": "always",
+          "typeHint": "REAL",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/inventory.go:626"
+          ]
+        },
+        {
+          "name": "provider_time",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/inventory.go:626"
+          ]
+        },
+        {
+          "name": "min_usd",
+          "requiredWhen": "always",
+          "typeHint": "REAL",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/inventory.go:626"
+          ]
+        },
+        {
+          "name": "max_usd",
+          "requiredWhen": "always",
+          "typeHint": "REAL",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/inventory.go:626"
+          ]
+        },
+        {
+          "name": "fetched_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "inferred",
+          "writeSources": [
+            "internal/processor/inventory.go:626"
+          ]
+        }
+      ],
+      "unique": [
+        {
+          "columns": [
+            "card_id",
+            "tier"
+          ],
+          "requiredWhen": "always",
+          "source": "internal/processor/inventory.go"
+        }
+      ],
+      "unknown": [
+        "UPSTREAM_TABLE_CONSTRAINTS_UNVERIFIED"
+      ]
+    },
+    {
+      "name": "card_product_policies",
+      "requiredWhen": "always",
+      "sources": [
+        "internal/processor/eligibility.go",
+        "internal/processor/payment.go"
+      ],
+      "columns": [
+        {
+          "name": "product_code",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture"
+        },
+        {
+          "name": "enabled",
+          "requiredWhen": "always",
+          "typeHint": "INTEGER",
+          "typeEvidence": "fixture"
+        },
+        {
+          "name": "provider_key",
+          "requiredWhen": "observed_only",
+          "typeHint": "TEXT",
+          "typeEvidence": "inferred"
+        }
+      ],
+      "unique": [],
+      "unknown": [
+        "UPSTREAM_TABLE_CONSTRAINTS_UNVERIFIED"
+      ]
+    },
+    {
+      "name": "cdkeys",
+      "requiredWhen": "always",
+      "sources": [
+        "internal/processor/intake.go",
+        "internal/processor/session_recovery.go"
+      ],
+      "columns": [
+        {
+          "name": "id",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture"
+        },
+        {
+          "name": "status",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/session_recovery.go:116"
+          ]
+        },
+        {
+          "name": "locked_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/session_recovery.go:116"
+          ]
+        },
+        {
+          "name": "locked_by_order_id",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/session_recovery.go:116"
+          ]
+        },
+        {
+          "name": "updated_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/session_recovery.go:116"
+          ]
+        },
+        {
+          "name": "manual_type",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture"
+        },
+        {
+          "name": "metadata",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture"
+        }
+      ],
+      "unique": [],
+      "unknown": [
+        "UPSTREAM_TABLE_CONSTRAINTS_UNVERIFIED"
+      ]
+    },
+    {
+      "name": "checkout_price_contracts",
+      "requiredWhen": "always",
+      "sources": [
+        "internal/processor/checkout.go",
+        "internal/processor/eligibility.go",
+        "internal/processor/payment.go"
+      ],
+      "columns": [
+        {
+          "name": "id",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture"
+        },
+        {
+          "name": "version",
+          "requiredWhen": "always",
+          "typeHint": "INTEGER",
+          "typeEvidence": "fixture"
+        },
+        {
+          "name": "tier",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture"
+        },
+        {
+          "name": "currency",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture"
+        },
+        {
+          "name": "min_amount",
+          "requiredWhen": "always",
+          "typeHint": "REAL",
+          "typeEvidence": "fixture"
+        },
+        {
+          "name": "max_amount",
+          "requiredWhen": "always",
+          "typeHint": "REAL",
+          "typeEvidence": "fixture"
+        },
+        {
+          "name": "status",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture"
+        }
+      ],
+      "unique": [],
+      "unknown": [
+        "UPSTREAM_TABLE_CONSTRAINTS_UNVERIFIED"
+      ]
+    },
+    {
+      "name": "checkout_validation_runs",
+      "requiredWhen": "always",
+      "sources": [
+        "internal/processor/checkout.go"
+      ],
+      "columns": [
+        {
+          "name": "id",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/checkout.go:185"
+          ]
+        },
+        {
+          "name": "order_id",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/checkout.go:185"
+          ]
+        },
+        {
+          "name": "site_id",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/checkout.go:185"
+          ]
+        },
+        {
+          "name": "product_id",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/checkout.go:185"
+          ]
+        },
+        {
+          "name": "tier",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/checkout.go:185"
+          ]
+        },
+        {
+          "name": "adapter_version",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/checkout.go:185"
+          ]
+        },
+        {
+          "name": "price_contract_id",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/checkout.go:185"
+          ]
+        },
+        {
+          "name": "status",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/checkout.go:185"
+          ]
+        },
+        {
+          "name": "sanitized_result",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/checkout.go:185"
+          ]
+        },
+        {
+          "name": "started_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/checkout.go:185"
+          ]
+        },
+        {
+          "name": "completed_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/checkout.go:185"
+          ]
+        },
+        {
+          "name": "created_by",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/checkout.go:185"
+          ]
+        }
+      ],
+      "unique": [],
+      "unknown": [
+        "UPSTREAM_TABLE_CONSTRAINTS_UNVERIFIED"
+      ]
+    },
+    {
+      "name": "extension_delivery_settings",
+      "requiredWhen": "always",
+      "sources": [
+        "internal/processor/dependencies.go"
+      ],
+      "columns": [
+        {
+          "name": "id",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture"
+        },
+        {
+          "name": "spacexcard_api_token_encrypted",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture"
+        }
+      ],
+      "unique": [],
+      "unknown": [
+        "UPSTREAM_TABLE_CONSTRAINTS_UNVERIFIED"
+      ]
+    },
+    {
+      "name": "fulfillment_dependency_circuits",
+      "requiredWhen": "always",
+      "sources": [
+        "internal/processor/dependencies.go"
+      ],
+      "columns": [
+        {
+          "name": "id",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/dependencies.go:297"
+          ]
+        },
+        {
+          "name": "dependency",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/dependencies.go:297"
+          ]
+        },
+        {
+          "name": "scope_key",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/dependencies.go:297"
+          ]
+        },
+        {
+          "name": "state",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/dependencies.go:214",
+            "internal/processor/dependencies.go:241",
+            "internal/processor/dependencies.go:297"
+          ]
+        },
+        {
+          "name": "failure_count",
+          "requiredWhen": "always",
+          "typeHint": "INTEGER",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/dependencies.go:241",
+            "internal/processor/dependencies.go:297"
+          ]
+        },
+        {
+          "name": "opened_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/dependencies.go:241",
+            "internal/processor/dependencies.go:297"
+          ]
+        },
+        {
+          "name": "retry_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/dependencies.go:241",
+            "internal/processor/dependencies.go:297"
+          ]
+        },
+        {
+          "name": "recovery_revision",
+          "requiredWhen": "always",
+          "typeHint": "INTEGER",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/dependencies.go:241",
+            "internal/processor/dependencies.go:297"
+          ]
+        },
+        {
+          "name": "reason_code",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/dependencies.go:241",
+            "internal/processor/dependencies.go:297"
+          ]
+        },
+        {
+          "name": "updated_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/dependencies.go:199",
+            "internal/processor/dependencies.go:214",
+            "internal/processor/dependencies.go:241",
+            "internal/processor/dependencies.go:297"
+          ]
+        }
+      ],
+      "unique": [
+        {
+          "columns": [
+            "dependency",
+            "scope_key"
+          ],
+          "requiredWhen": "always",
+          "source": "internal/processor/dependencies.go"
+        }
+      ],
+      "unknown": [
+        "UPSTREAM_TABLE_CONSTRAINTS_UNVERIFIED"
+      ]
+    },
+    {
+      "name": "fulfillment_interventions",
+      "requiredWhen": "always",
+      "sources": [
+        "internal/processor/checkout.go",
+        "internal/processor/reconciliation.go"
+      ],
+      "columns": [
+        {
+          "name": "id",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/checkout.go:581",
+            "internal/processor/reconciliation.go:879"
+          ]
+        },
+        {
+          "name": "fulfillment_id",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/checkout.go:581",
+            "internal/processor/reconciliation.go:879"
+          ]
+        },
+        {
+          "name": "state",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/checkout.go:581",
+            "internal/processor/reconciliation.go:879"
+          ]
+        },
+        {
+          "name": "state_revision",
+          "requiredWhen": "always",
+          "typeHint": "INTEGER",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/checkout.go:581",
+            "internal/processor/reconciliation.go:879"
+          ]
+        },
+        {
+          "name": "reason_code",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/checkout.go:581",
+            "internal/processor/reconciliation.go:879"
+          ]
+        },
+        {
+          "name": "created_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/checkout.go:581",
+            "internal/processor/reconciliation.go:879"
+          ]
+        },
+        {
+          "name": "acknowledged_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture"
+        },
+        {
+          "name": "acknowledged_by",
+          "requiredWhen": "observed_only",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture"
+        },
+        {
+          "name": "feishu_status",
+          "requiredWhen": "observed_only",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture"
+        },
+        {
+          "name": "feishu_sent_at",
+          "requiredWhen": "observed_only",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture"
+        }
+      ],
+      "unique": [],
+      "unknown": [
+        "UPSTREAM_TABLE_CONSTRAINTS_UNVERIFIED",
+        "INTERVENTION_UNIQUENESS_CONFLICT_UNRESOLVED"
+      ]
+    },
+    {
+      "name": "funding_intents",
+      "requiredWhen": "always",
+      "sources": [
+        "internal/processor/payment.go",
+        "internal/processor/session_recovery.go"
+      ],
+      "columns": [
+        {
+          "name": "id",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/payment.go:2189"
+          ]
+        },
+        {
+          "name": "fulfillment_id",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/payment.go:2189"
+          ]
+        },
+        {
+          "name": "submitted_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/payment.go:2435",
+            "internal/processor/payment.go:2668"
+          ]
+        },
+        {
+          "name": "operation",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/payment.go:2189"
+          ]
+        },
+        {
+          "name": "target_card_id",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/payment.go:2189"
+          ]
+        },
+        {
+          "name": "product_code",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/payment.go:2189"
+          ]
+        },
+        {
+          "name": "amount",
+          "requiredWhen": "always",
+          "typeHint": "REAL",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/payment.go:2189"
+          ]
+        },
+        {
+          "name": "fee",
+          "requiredWhen": "always",
+          "typeHint": "REAL",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/payment.go:2189"
+          ]
+        },
+        {
+          "name": "idempotency_key",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/payment.go:2189"
+          ]
+        },
+        {
+          "name": "request_fingerprint",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/payment.go:2189"
+          ]
+        },
+        {
+          "name": "request_body_encrypted",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/payment.go:2189"
+          ]
+        },
+        {
+          "name": "state",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/payment.go:2189",
+            "internal/processor/payment.go:2435",
+            "internal/processor/payment.go:2597",
+            "internal/processor/payment.go:2668",
+            "internal/processor/payment.go:2750",
+            "internal/processor/payment.go:2784"
+          ]
+        },
+        {
+          "name": "provider_resource_id",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/payment.go:2784"
+          ]
+        },
+        {
+          "name": "created_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/payment.go:2189"
+          ]
+        },
+        {
+          "name": "resolved_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/payment.go:2435",
+            "internal/processor/payment.go:2597",
+            "internal/processor/payment.go:2668",
+            "internal/processor/payment.go:2750",
+            "internal/processor/payment.go:2784"
+          ]
+        },
+        {
+          "name": "provider_key",
+          "requiredWhen": "observed_only",
+          "typeHint": "TEXT",
+          "typeEvidence": "inferred",
+          "writeSources": [
+            "internal/processor/payment.go:2189"
+          ]
+        }
+      ],
+      "unique": [],
+      "unknown": [
+        "UPSTREAM_TABLE_CONSTRAINTS_UNVERIFIED"
+      ]
+    },
+    {
+      "name": "live_canary_authorizations",
+      "requiredWhen": "always",
+      "sources": [
+        "internal/processor/checkout.go"
+      ],
+      "columns": [
+        {
+          "name": "id",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "inferred"
+        },
+        {
+          "name": "fulfillment_id",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "inferred"
+        },
+        {
+          "name": "stage_key",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "inferred"
+        },
+        {
+          "name": "target_tier",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "inferred"
+        },
+        {
+          "name": "card_id",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "inferred"
+        },
+        {
+          "name": "price_contract_id",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "inferred"
+        },
+        {
+          "name": "adapter_version",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "inferred"
+        },
+        {
+          "name": "state",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "inferred",
+          "writeSources": [
+            "internal/processor/checkout.go:767",
+            "internal/processor/checkout.go:790"
+          ]
+        },
+        {
+          "name": "snapshot_fingerprint",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "inferred"
+        },
+        {
+          "name": "approved_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "inferred"
+        },
+        {
+          "name": "invalidated_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "inferred",
+          "writeSources": [
+            "internal/processor/checkout.go:767"
+          ]
+        },
+        {
+          "name": "consumed_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "inferred",
+          "writeSources": [
+            "internal/processor/checkout.go:790"
+          ]
+        }
+      ],
+      "unique": [],
+      "unknown": [
+        "UPSTREAM_TABLE_CONSTRAINTS_UNVERIFIED"
+      ]
+    },
+    {
+      "name": "managed_card_transactions",
+      "requiredWhen": "always",
+      "sources": [
+        "internal/processor/inventory.go",
+        "internal/processor/reconciliation.go"
+      ],
+      "columns": [
+        {
+          "name": "card_id",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/inventory.go:609",
+            "internal/processor/reconciliation.go:761"
+          ]
+        },
+        {
+          "name": "auth_id",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/inventory.go:609",
+            "internal/processor/reconciliation.go:761"
+          ]
+        },
+        {
+          "name": "auth_time",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/inventory.go:609",
+            "internal/processor/reconciliation.go:761"
+          ]
+        },
+        {
+          "name": "auth_amount",
+          "requiredWhen": "always",
+          "typeHint": "REAL",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/inventory.go:609",
+            "internal/processor/reconciliation.go:761"
+          ]
+        },
+        {
+          "name": "auth_currency",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/inventory.go:609",
+            "internal/processor/reconciliation.go:761"
+          ]
+        },
+        {
+          "name": "settle_amount",
+          "requiredWhen": "always",
+          "typeHint": "REAL",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/inventory.go:609",
+            "internal/processor/reconciliation.go:761"
+          ]
+        },
+        {
+          "name": "settle_currency",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/inventory.go:609",
+            "internal/processor/reconciliation.go:761"
+          ]
+        },
+        {
+          "name": "type",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/inventory.go:609",
+            "internal/processor/reconciliation.go:761"
+          ]
+        },
+        {
+          "name": "status",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/inventory.go:609",
+            "internal/processor/reconciliation.go:761"
+          ]
+        },
+        {
+          "name": "merchant_normalized",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/inventory.go:609",
+            "internal/processor/reconciliation.go:761"
+          ]
+        },
+        {
+          "name": "authorization_seen",
+          "requiredWhen": "always",
+          "typeHint": "INTEGER",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/inventory.go:609",
+            "internal/processor/reconciliation.go:761"
+          ]
+        },
+        {
+          "name": "settlement_seen",
+          "requiredWhen": "always",
+          "typeHint": "INTEGER",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/inventory.go:609",
+            "internal/processor/reconciliation.go:761"
+          ]
+        },
+        {
+          "name": "refund_seen",
+          "requiredWhen": "always",
+          "typeHint": "INTEGER",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/inventory.go:609",
+            "internal/processor/reconciliation.go:761"
+          ]
+        },
+        {
+          "name": "reversal_seen",
+          "requiredWhen": "always",
+          "typeHint": "INTEGER",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/inventory.go:609",
+            "internal/processor/reconciliation.go:761"
+          ]
+        },
+        {
+          "name": "decline_reason_code",
+          "requiredWhen": "observed_only",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture"
+        },
+        {
+          "name": "first_seen_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/inventory.go:609",
+            "internal/processor/reconciliation.go:761"
+          ]
+        },
+        {
+          "name": "last_seen_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/inventory.go:609",
+            "internal/processor/reconciliation.go:761"
+          ]
+        }
+      ],
+      "unique": [
+        {
+          "columns": [
+            "card_id",
+            "auth_id"
+          ],
+          "requiredWhen": "always",
+          "source": "internal/processor/inventory.go"
+        }
+      ],
+      "unknown": [
+        "UPSTREAM_TABLE_CONSTRAINTS_UNVERIFIED"
+      ]
+    },
+    {
+      "name": "managed_cards",
+      "requiredWhen": "always",
+      "sources": [
+        "internal/processor/checkout.go",
+        "internal/processor/eligibility.go",
+        "internal/processor/inventory.go",
+        "internal/processor/payment.go",
+        "internal/processor/reconciliation.go"
+      ],
+      "columns": [
+        {
+          "name": "id",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/inventory.go:381",
+            "internal/processor/inventory.go:393",
+            "internal/processor/payment.go:2840",
+            "internal/processor/payment.go:2847"
+          ]
+        },
+        {
+          "name": "product_code",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/inventory.go:381",
+            "internal/processor/inventory.go:393",
+            "internal/processor/payment.go:2840",
+            "internal/processor/payment.go:2847"
+          ]
+        },
+        {
+          "name": "lane",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/inventory.go:643",
+            "internal/processor/payment.go:1525",
+            "internal/processor/payment.go:2840",
+            "internal/processor/payment.go:2847",
+            "internal/processor/payment.go:2880",
+            "internal/processor/reconciliation.go:709"
+          ]
+        },
+        {
+          "name": "consumed_slots",
+          "requiredWhen": "always",
+          "typeHint": "INTEGER",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/inventory.go:643",
+            "internal/processor/payment.go:2840",
+            "internal/processor/payment.go:2847"
+          ]
+        },
+        {
+          "name": "capacity_state",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/inventory.go:381",
+            "internal/processor/inventory.go:393",
+            "internal/processor/inventory.go:643",
+            "internal/processor/inventory.go:711",
+            "internal/processor/inventory.go:756",
+            "internal/processor/payment.go:1451",
+            "internal/processor/payment.go:2840",
+            "internal/processor/payment.go:2847"
+          ]
+        },
+        {
+          "name": "upstream_status",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/inventory.go:381",
+            "internal/processor/inventory.go:393",
+            "internal/processor/inventory.go:643",
+            "internal/processor/inventory.go:711",
+            "internal/processor/payment.go:1192",
+            "internal/processor/payment.go:2840",
+            "internal/processor/payment.go:2847"
+          ]
+        },
+        {
+          "name": "reconciliation_state",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/inventory.go:381",
+            "internal/processor/inventory.go:393",
+            "internal/processor/inventory.go:643",
+            "internal/processor/inventory.go:711",
+            "internal/processor/inventory.go:756",
+            "internal/processor/payment.go:2840",
+            "internal/processor/payment.go:2847"
+          ]
+        },
+        {
+          "name": "upstream_card_id",
+          "requiredWhen": "always",
+          "typeHint": "INTEGER",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/inventory.go:381",
+            "internal/processor/inventory.go:393",
+            "internal/processor/payment.go:2840",
+            "internal/processor/payment.go:2847"
+          ]
+        },
+        {
+          "name": "reconciliation_reason",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/inventory.go:643",
+            "internal/processor/inventory.go:711",
+            "internal/processor/inventory.go:756"
+          ]
+        },
+        {
+          "name": "updated_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/inventory.go:381",
+            "internal/processor/inventory.go:393",
+            "internal/processor/inventory.go:643",
+            "internal/processor/inventory.go:711",
+            "internal/processor/inventory.go:756",
+            "internal/processor/payment.go:1192",
+            "internal/processor/payment.go:1451",
+            "internal/processor/payment.go:1525",
+            "internal/processor/payment.go:2840",
+            "internal/processor/payment.go:2847",
+            "internal/processor/payment.go:2880",
+            "internal/processor/reconciliation.go:709",
+            "internal/processor/reconciliation.go:786"
+          ]
+        },
+        {
+          "name": "vm_card_id",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/inventory.go:381",
+            "internal/processor/inventory.go:393",
+            "internal/processor/payment.go:2840",
+            "internal/processor/payment.go:2847"
+          ]
+        },
+        {
+          "name": "cached_available_amount",
+          "requiredWhen": "always",
+          "typeHint": "REAL",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/inventory.go:381",
+            "internal/processor/inventory.go:393",
+            "internal/processor/payment.go:1192",
+            "internal/processor/payment.go:2840",
+            "internal/processor/payment.go:2847"
+          ]
+        },
+        {
+          "name": "bin",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/inventory.go:381",
+            "internal/processor/inventory.go:393",
+            "internal/processor/payment.go:2840",
+            "internal/processor/payment.go:2847"
+          ]
+        },
+        {
+          "name": "last4",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/inventory.go:381",
+            "internal/processor/inventory.go:393",
+            "internal/processor/payment.go:2840",
+            "internal/processor/payment.go:2847"
+          ]
+        },
+        {
+          "name": "last_balance_sync_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/inventory.go:381",
+            "internal/processor/inventory.go:393",
+            "internal/processor/payment.go:1192",
+            "internal/processor/payment.go:2840",
+            "internal/processor/payment.go:2847"
+          ]
+        },
+        {
+          "name": "created_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/inventory.go:381",
+            "internal/processor/inventory.go:393",
+            "internal/processor/payment.go:2840",
+            "internal/processor/payment.go:2847"
+          ]
+        },
+        {
+          "name": "last_transaction_sync_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/inventory.go:643",
+            "internal/processor/reconciliation.go:786"
+          ]
+        },
+        {
+          "name": "provider_key",
+          "requiredWhen": "platform_catalog",
+          "typeHint": "TEXT",
+          "typeEvidence": "inferred",
+          "writeSources": [
+            "internal/processor/inventory.go:381",
+            "internal/processor/payment.go:2840"
+          ]
+        }
+      ],
+      "unique": [
+        {
+          "columns": [
+            "provider_key",
+            "upstream_card_id"
+          ],
+          "requiredWhen": "platform_catalog",
+          "source": "internal/processor/inventory.go"
+        },
+        {
+          "columns": [
+            "upstream_card_id"
+          ],
+          "requiredWhen": "legacy_catalog",
+          "source": "internal/processor/inventory.go"
+        }
+      ],
+      "unknown": [
+        "UPSTREAM_TABLE_CONSTRAINTS_UNVERIFIED"
+      ]
+    },
+    {
+      "name": "membership_action_auth_snapshots",
+      "requiredWhen": "always",
+      "sources": [
+        "internal/processor/checkout.go",
+        "internal/processor/reconciliation.go"
+      ],
+      "columns": [
+        {
+          "name": "permit_id",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/checkout.go:682"
+          ]
+        },
+        {
+          "name": "card_id",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/checkout.go:682"
+          ]
+        },
+        {
+          "name": "auth_id",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/checkout.go:682"
+          ]
+        },
+        {
+          "name": "snapshotted_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/checkout.go:682"
+          ]
+        }
+      ],
+      "unique": [],
+      "unknown": [
+        "UPSTREAM_TABLE_CONSTRAINTS_UNVERIFIED",
+        "INSERT_IGNORE_IDEMPOTENCY_CONSTRAINT_UNVERIFIED"
+      ]
+    },
+    {
+      "name": "membership_action_permits",
+      "requiredWhen": "always",
+      "sources": [
+        "internal/executor/bridge.go",
+        "internal/processor/checkout.go",
+        "internal/processor/reconciliation.go",
+        "internal/processor/session_recovery.go"
+      ],
+      "columns": [
+        {
+          "name": "fulfillment_id",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/checkout.go:671"
+          ]
+        },
+        {
+          "name": "stage_key",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/checkout.go:671"
+          ]
+        },
+        {
+          "name": "attempt_no",
+          "requiredWhen": "always",
+          "typeHint": "INTEGER",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/checkout.go:671"
+          ]
+        },
+        {
+          "name": "action_type",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/checkout.go:671"
+          ]
+        },
+        {
+          "name": "state",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/checkout.go:276",
+            "internal/processor/checkout.go:671",
+            "internal/processor/checkout.go:834",
+            "internal/processor/checkout.go:851",
+            "internal/processor/checkout.go:882",
+            "internal/processor/checkout.go:946",
+            "internal/processor/reconciliation.go:606",
+            "internal/processor/reconciliation.go:636",
+            "internal/processor/session_recovery.go:73",
+            "internal/processor/session_recovery.go:93"
+          ]
+        },
+        {
+          "name": "id",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/checkout.go:671"
+          ]
+        },
+        {
+          "name": "activated_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/checkout.go:882"
+          ]
+        },
+        {
+          "name": "reported_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/checkout.go:276",
+            "internal/processor/checkout.go:834",
+            "internal/processor/checkout.go:851",
+            "internal/processor/checkout.go:946",
+            "internal/processor/reconciliation.go:606",
+            "internal/processor/reconciliation.go:636",
+            "internal/processor/session_recovery.go:73",
+            "internal/processor/session_recovery.go:93"
+          ]
+        },
+        {
+          "name": "outcome_code",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/checkout.go:276",
+            "internal/processor/checkout.go:834",
+            "internal/processor/checkout.go:851",
+            "internal/processor/checkout.go:946",
+            "internal/processor/reconciliation.go:606",
+            "internal/processor/reconciliation.go:636",
+            "internal/processor/session_recovery.go:73",
+            "internal/processor/session_recovery.go:93"
+          ]
+        },
+        {
+          "name": "sequence_no",
+          "requiredWhen": "always",
+          "typeHint": "INTEGER",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/checkout.go:671"
+          ]
+        },
+        {
+          "name": "installation_id",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "inferred",
+          "writeSources": [
+            "internal/processor/checkout.go:671"
+          ]
+        },
+        {
+          "name": "browser_lease_epoch",
+          "requiredWhen": "always",
+          "typeHint": "INTEGER",
+          "typeEvidence": "inferred",
+          "writeSources": [
+            "internal/processor/checkout.go:671"
+          ]
+        },
+        {
+          "name": "adapter_version",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "inferred",
+          "writeSources": [
+            "internal/processor/checkout.go:671"
+          ]
+        },
+        {
+          "name": "price_contract_id",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "inferred",
+          "writeSources": [
+            "internal/processor/checkout.go:671"
+          ]
+        },
+        {
+          "name": "control_id",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "inferred",
+          "writeSources": [
+            "internal/processor/checkout.go:671"
+          ]
+        },
+        {
+          "name": "page_fingerprint",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "inferred",
+          "writeSources": [
+            "internal/processor/checkout.go:671"
+          ]
+        },
+        {
+          "name": "issued_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "inferred",
+          "writeSources": [
+            "internal/processor/checkout.go:671"
+          ]
+        },
+        {
+          "name": "expires_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "inferred",
+          "writeSources": [
+            "internal/processor/checkout.go:671"
+          ]
+        },
+        {
+          "name": "authorization_mode",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "inferred",
+          "writeSources": [
+            "internal/processor/checkout.go:671"
+          ]
+        },
+        {
+          "name": "authorization_id",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "inferred",
+          "writeSources": [
+            "internal/processor/checkout.go:671"
+          ]
+        }
+      ],
+      "unique": [],
+      "unknown": [
+        "UPSTREAM_TABLE_CONSTRAINTS_UNVERIFIED"
+      ]
+    },
+    {
+      "name": "membership_card_platforms",
+      "requiredWhen": "if_present",
+      "sources": [
+        "internal/processor/dependencies.go",
+        "internal/processor/inventory.go"
+      ],
+      "columns": [
+        {
+          "name": "key",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture"
+        },
+        {
+          "name": "kind",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture"
+        },
+        {
+          "name": "base_url",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture"
+        },
+        {
+          "name": "credential_encrypted",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture"
+        },
+        {
+          "name": "enabled",
+          "requiredWhen": "always",
+          "typeHint": "INTEGER",
+          "typeEvidence": "inferred"
+        },
+        {
+          "name": "priority",
+          "requiredWhen": "always",
+          "typeHint": "INTEGER",
+          "typeEvidence": "inferred"
+        },
+        {
+          "name": "inventory_status",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "inferred",
+          "writeSources": [
+            "internal/processor/inventory.go:251",
+            "internal/processor/inventory.go:345",
+            "internal/processor/inventory.go:727"
+          ]
+        },
+        {
+          "name": "last_inventory_error",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "inferred",
+          "writeSources": [
+            "internal/processor/inventory.go:251",
+            "internal/processor/inventory.go:345",
+            "internal/processor/inventory.go:727",
+            "internal/processor/inventory.go:773",
+            "internal/processor/inventory.go:791"
+          ]
+        },
+        {
+          "name": "updated_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "inferred",
+          "writeSources": [
+            "internal/processor/inventory.go:251",
+            "internal/processor/inventory.go:345",
+            "internal/processor/inventory.go:727",
+            "internal/processor/inventory.go:773",
+            "internal/processor/inventory.go:791"
+          ]
+        },
+        {
+          "name": "updated_by",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "inferred",
+          "writeSources": [
+            "internal/processor/inventory.go:251",
+            "internal/processor/inventory.go:345",
+            "internal/processor/inventory.go:727",
+            "internal/processor/inventory.go:773",
+            "internal/processor/inventory.go:791"
+          ]
+        },
+        {
+          "name": "inventory_initialized_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "inferred",
+          "writeSources": [
+            "internal/processor/inventory.go:727"
+          ]
+        }
+      ],
+      "unique": [],
+      "unknown": [
+        "UPSTREAM_TABLE_CONSTRAINTS_UNVERIFIED"
+      ]
+    },
+    {
+      "name": "membership_checkout_commands",
+      "requiredWhen": "always",
+      "sources": [
+        "internal/executor/bridge.go",
+        "internal/executor/queue.go",
+        "internal/processor/session_recovery.go"
+      ],
+      "columns": [
+        {
+          "name": "id",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/executor/queue.go:115"
+          ]
+        },
+        {
+          "name": "fulfillment_id",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/executor/queue.go:115"
+          ]
+        },
+        {
+          "name": "stage_key",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/executor/queue.go:115"
+          ]
+        },
+        {
+          "name": "attempt_no",
+          "requiredWhen": "always",
+          "typeHint": "INTEGER",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/executor/queue.go:115"
+          ]
+        },
+        {
+          "name": "command_kind",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/executor/queue.go:115"
+          ]
+        },
+        {
+          "name": "priority_class",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/executor/queue.go:115"
+          ]
+        },
+        {
+          "name": "target_tier",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/executor/queue.go:115"
+          ]
+        },
+        {
+          "name": "adapter_version",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/executor/queue.go:115"
+          ]
+        },
+        {
+          "name": "price_contract_id",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/executor/queue.go:115"
+          ]
+        },
+        {
+          "name": "price_contract_version",
+          "requiredWhen": "always",
+          "typeHint": "INTEGER",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/executor/queue.go:115"
+          ]
+        },
+        {
+          "name": "fulfillment_revision",
+          "requiredWhen": "always",
+          "typeHint": "INTEGER",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/executor/queue.go:115"
+          ]
+        },
+        {
+          "name": "state",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/executor/bridge.go:66",
+            "internal/executor/bridge.go:677",
+            "internal/executor/queue.go:115",
+            "internal/executor/queue.go:219",
+            "internal/executor/queue.go:252",
+            "internal/executor/queue.go:284",
+            "internal/processor/session_recovery.go:68",
+            "internal/processor/session_recovery.go:88"
+          ]
+        },
+        {
+          "name": "lease_epoch",
+          "requiredWhen": "always",
+          "typeHint": "INTEGER",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/executor/queue.go:252"
+          ]
+        },
+        {
+          "name": "lease_token_sha256",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/executor/queue.go:252"
+          ]
+        },
+        {
+          "name": "leased_by",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/executor/queue.go:252"
+          ]
+        },
+        {
+          "name": "leased_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/executor/queue.go:252"
+          ]
+        },
+        {
+          "name": "heartbeat_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/executor/queue.go:252",
+            "internal/executor/queue.go:299"
+          ]
+        },
+        {
+          "name": "lease_expires_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/executor/queue.go:252",
+            "internal/executor/queue.go:299"
+          ]
+        },
+        {
+          "name": "hard_deadline_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/executor/queue.go:252"
+          ]
+        },
+        {
+          "name": "material_claimed_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/executor/queue.go:185"
+          ]
+        },
+        {
+          "name": "available_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/executor/queue.go:115"
+          ]
+        },
+        {
+          "name": "payment_ready_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/executor/queue.go:115"
+          ]
+        },
+        {
+          "name": "outcome_code",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/executor/bridge.go:66",
+            "internal/executor/bridge.go:677",
+            "internal/executor/queue.go:219",
+            "internal/executor/queue.go:284",
+            "internal/processor/session_recovery.go:68",
+            "internal/processor/session_recovery.go:88"
+          ]
+        },
+        {
+          "name": "sanitized_diagnostic",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/executor/queue.go:329",
+            "internal/executor/queue.go:334"
+          ]
+        },
+        {
+          "name": "created_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/executor/queue.go:115"
+          ]
+        },
+        {
+          "name": "updated_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/executor/bridge.go:66",
+            "internal/executor/bridge.go:677",
+            "internal/executor/queue.go:115",
+            "internal/executor/queue.go:185",
+            "internal/executor/queue.go:219",
+            "internal/executor/queue.go:252",
+            "internal/executor/queue.go:284",
+            "internal/executor/queue.go:299",
+            "internal/processor/session_recovery.go:68",
+            "internal/processor/session_recovery.go:88"
+          ]
+        },
+        {
+          "name": "ended_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/executor/bridge.go:66",
+            "internal/executor/bridge.go:677",
+            "internal/executor/queue.go:219",
+            "internal/executor/queue.go:284",
+            "internal/processor/session_recovery.go:68",
+            "internal/processor/session_recovery.go:88"
+          ]
+        }
+      ],
+      "unique": [],
+      "unknown": [
+        "UPSTREAM_TABLE_CONSTRAINTS_UNVERIFIED",
+        "INSERT_IGNORE_IDEMPOTENCY_CONSTRAINT_UNVERIFIED"
+      ]
+    },
+    {
+      "name": "membership_fulfillment_attempts",
+      "requiredWhen": "always",
+      "sources": [
+        "internal/processor/checkout.go",
+        "internal/processor/reconciliation.go",
+        "internal/processor/session_recovery.go"
+      ],
+      "columns": [
+        {
+          "name": "id",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/checkout.go:315"
+          ]
+        },
+        {
+          "name": "fulfillment_id",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/checkout.go:315"
+          ]
+        },
+        {
+          "name": "ended_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/checkout.go:536",
+            "internal/processor/reconciliation.go:1091",
+            "internal/processor/session_recovery.go:202"
+          ]
+        },
+        {
+          "name": "outcome_code",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/checkout.go:536",
+            "internal/processor/reconciliation.go:1091",
+            "internal/processor/session_recovery.go:202"
+          ]
+        },
+        {
+          "name": "stage",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "inferred",
+          "writeSources": [
+            "internal/processor/checkout.go:315"
+          ]
+        },
+        {
+          "name": "attempt_no",
+          "requiredWhen": "always",
+          "typeHint": "INTEGER",
+          "typeEvidence": "inferred",
+          "writeSources": [
+            "internal/processor/checkout.go:315"
+          ]
+        },
+        {
+          "name": "resume_revision",
+          "requiredWhen": "always",
+          "typeHint": "INTEGER",
+          "typeEvidence": "inferred",
+          "writeSources": [
+            "internal/processor/checkout.go:315"
+          ]
+        },
+        {
+          "name": "adapter_version",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "inferred",
+          "writeSources": [
+            "internal/processor/checkout.go:315"
+          ]
+        },
+        {
+          "name": "price_contract_version",
+          "requiredWhen": "always",
+          "typeHint": "INTEGER",
+          "typeEvidence": "inferred",
+          "writeSources": [
+            "internal/processor/checkout.go:315"
+          ]
+        },
+        {
+          "name": "started_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "inferred",
+          "writeSources": [
+            "internal/processor/checkout.go:315"
+          ]
+        }
+      ],
+      "unique": [],
+      "unknown": [
+        "UPSTREAM_TABLE_CONSTRAINTS_UNVERIFIED"
+      ]
+    },
+    {
+      "name": "membership_fulfillment_settings",
+      "requiredWhen": "always",
+      "sources": [
+        "internal/executor/bridge.go",
+        "internal/processor/checkout.go",
+        "internal/processor/dependencies.go",
+        "internal/processor/eligibility.go",
+        "internal/processor/inventory.go",
+        "internal/processor/payment.go"
+      ],
+      "columns": [
+        {
+          "name": "id",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture"
+        },
+        {
+          "name": "enabled",
+          "requiredWhen": "always",
+          "typeHint": "INTEGER",
+          "typeEvidence": "fixture"
+        },
+        {
+          "name": "rollout_mode",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture"
+        },
+        {
+          "name": "inventory_status",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/inventory.go:248",
+            "internal/processor/inventory.go:319",
+            "internal/processor/inventory.go:349",
+            "internal/processor/inventory.go:733"
+          ]
+        },
+        {
+          "name": "spacexcard_app_id",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture"
+        },
+        {
+          "name": "spacexcard_app_secret_encrypted",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture"
+        },
+        {
+          "name": "last_inventory_error",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/inventory.go:248",
+            "internal/processor/inventory.go:319",
+            "internal/processor/inventory.go:349",
+            "internal/processor/inventory.go:733",
+            "internal/processor/inventory.go:769",
+            "internal/processor/inventory.go:796"
+          ]
+        },
+        {
+          "name": "updated_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/inventory.go:248",
+            "internal/processor/inventory.go:319",
+            "internal/processor/inventory.go:349",
+            "internal/processor/inventory.go:733",
+            "internal/processor/inventory.go:769",
+            "internal/processor/inventory.go:796"
+          ]
+        },
+        {
+          "name": "updated_by",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/inventory.go:248",
+            "internal/processor/inventory.go:319",
+            "internal/processor/inventory.go:349",
+            "internal/processor/inventory.go:733",
+            "internal/processor/inventory.go:769",
+            "internal/processor/inventory.go:796"
+          ]
+        },
+        {
+          "name": "inventory_initialized_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "inferred",
+          "writeSources": [
+            "internal/processor/inventory.go:733"
+          ]
+        }
+      ],
+      "unique": [],
+      "unknown": [
+        "UPSTREAM_TABLE_CONSTRAINTS_UNVERIFIED"
+      ]
+    },
+    {
+      "name": "membership_fulfillments",
+      "requiredWhen": "always",
+      "sources": [
+        "internal/executor/bridge.go",
+        "internal/processor/checkout.go",
+        "internal/processor/eligibility.go",
+        "internal/processor/intake.go",
+        "internal/processor/payment.go",
+        "internal/processor/reconciliation.go",
+        "internal/processor/session_recovery.go",
+        "internal/processor/state.go"
+      ],
+      "columns": [
+        {
+          "name": "id",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/intake.go:100"
+          ]
+        },
+        {
+          "name": "state",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/eligibility.go:142",
+            "internal/processor/eligibility.go:196",
+            "internal/processor/eligibility.go:221",
+            "internal/processor/intake.go:100",
+            "internal/processor/reconciliation.go:865",
+            "internal/processor/session_recovery.go:213",
+            "internal/processor/state.go:124"
+          ]
+        },
+        {
+          "name": "run_mode",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/intake.go:100",
+            "internal/processor/payment.go:1852"
+          ]
+        },
+        {
+          "name": "state_revision",
+          "requiredWhen": "always",
+          "typeHint": "INTEGER",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/eligibility.go:142",
+            "internal/processor/eligibility.go:196",
+            "internal/processor/eligibility.go:221",
+            "internal/processor/intake.go:100",
+            "internal/processor/payment.go:1852",
+            "internal/processor/reconciliation.go:865",
+            "internal/processor/session_recovery.go:213",
+            "internal/processor/state.go:124"
+          ]
+        },
+        {
+          "name": "card_reservation_id",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/payment.go:1492",
+            "internal/processor/payment.go:1536",
+            "internal/processor/payment.go:1576",
+            "internal/processor/payment.go:1594"
+          ]
+        },
+        {
+          "name": "money_boundary_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/executor/bridge.go:310",
+            "internal/processor/checkout.go:708",
+            "internal/processor/checkout.go:885",
+            "internal/processor/payment.go:1492",
+            "internal/processor/payment.go:1497",
+            "internal/processor/payment.go:1536",
+            "internal/processor/payment.go:2448",
+            "internal/processor/payment.go:2673"
+          ]
+        },
+        {
+          "name": "updated_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/executor/bridge.go:310",
+            "internal/processor/checkout.go:885",
+            "internal/processor/eligibility.go:142",
+            "internal/processor/eligibility.go:196",
+            "internal/processor/eligibility.go:221",
+            "internal/processor/intake.go:100",
+            "internal/processor/payment.go:1492",
+            "internal/processor/payment.go:1497",
+            "internal/processor/payment.go:1536",
+            "internal/processor/payment.go:1594",
+            "internal/processor/payment.go:1852",
+            "internal/processor/payment.go:2448",
+            "internal/processor/payment.go:2673",
+            "internal/processor/reconciliation.go:1211",
+            "internal/processor/reconciliation.go:186",
+            "internal/processor/reconciliation.go:539",
+            "internal/processor/reconciliation.go:865",
+            "internal/processor/session_recovery.go:213",
+            "internal/processor/state.go:124"
+          ]
+        },
+        {
+          "name": "order_id",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/intake.go:100"
+          ]
+        },
+        {
+          "name": "order_no",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/intake.go:100"
+          ]
+        },
+        {
+          "name": "target_tier",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/intake.go:100"
+          ]
+        },
+        {
+          "name": "current_stage",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/eligibility.go:221",
+            "internal/processor/intake.go:100",
+            "internal/processor/reconciliation.go:865",
+            "internal/processor/state.go:124"
+          ]
+        },
+        {
+          "name": "account_lock_key",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/eligibility.go:142",
+            "internal/processor/intake.go:100"
+          ]
+        },
+        {
+          "name": "retry_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/eligibility.go:142",
+            "internal/processor/eligibility.go:196",
+            "internal/processor/eligibility.go:221",
+            "internal/processor/reconciliation.go:1211",
+            "internal/processor/reconciliation.go:186",
+            "internal/processor/reconciliation.go:539",
+            "internal/processor/reconciliation.go:865",
+            "internal/processor/session_recovery.go:213",
+            "internal/processor/state.go:124"
+          ]
+        },
+        {
+          "name": "failure_code",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/eligibility.go:142",
+            "internal/processor/eligibility.go:196",
+            "internal/processor/eligibility.go:221",
+            "internal/processor/reconciliation.go:1211",
+            "internal/processor/reconciliation.go:539",
+            "internal/processor/reconciliation.go:865",
+            "internal/processor/session_recovery.go:213",
+            "internal/processor/state.go:124"
+          ]
+        },
+        {
+          "name": "created_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/intake.go:100"
+          ]
+        },
+        {
+          "name": "completed_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/reconciliation.go:865",
+            "internal/processor/state.go:124"
+          ]
+        },
+        {
+          "name": "resume_revision",
+          "requiredWhen": "always",
+          "typeHint": "INTEGER",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/intake.go:100"
+          ]
+        },
+        {
+          "name": "browser_lease_epoch",
+          "requiredWhen": "always",
+          "typeHint": "INTEGER",
+          "typeEvidence": "fixture"
+        }
+      ],
+      "unique": [],
+      "unknown": [
+        "UPSTREAM_TABLE_CONSTRAINTS_UNVERIFIED"
+      ]
+    },
+    {
+      "name": "membership_intake_settings",
+      "requiredWhen": "always",
+      "sources": [
+        "internal/processor/intake.go"
+      ],
+      "columns": [
+        {
+          "name": "id",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture"
+        },
+        {
+          "name": "accept_orders_created_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture"
+        },
+        {
+          "name": "created_at",
+          "requiredWhen": "observed_only",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture"
+        },
+        {
+          "name": "created_by",
+          "requiredWhen": "observed_only",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture"
+        }
+      ],
+      "unique": [],
+      "unknown": [
+        "UPSTREAM_TABLE_CONSTRAINTS_UNVERIFIED"
+      ]
+    },
+    {
+      "name": "membership_no_payment_checks",
+      "requiredWhen": "always",
+      "sources": [
+        "internal/processor/reconciliation.go"
+      ],
+      "columns": [
+        {
+          "name": "id",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/reconciliation.go:957"
+          ]
+        },
+        {
+          "name": "fulfillment_id",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/reconciliation.go:957"
+          ]
+        },
+        {
+          "name": "stage_key",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/reconciliation.go:957"
+          ]
+        },
+        {
+          "name": "checkpoint",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/reconciliation.go:957"
+          ]
+        },
+        {
+          "name": "membership_unchanged",
+          "requiredWhen": "always",
+          "typeHint": "INTEGER",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/reconciliation.go:957"
+          ]
+        },
+        {
+          "name": "no_effective_transaction",
+          "requiredWhen": "always",
+          "typeHint": "INTEGER",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/reconciliation.go:957"
+          ]
+        },
+        {
+          "name": "no_pending_authorization",
+          "requiredWhen": "always",
+          "typeHint": "INTEGER",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/reconciliation.go:957"
+          ]
+        },
+        {
+          "name": "observed_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/reconciliation.go:957"
+          ]
+        }
+      ],
+      "unique": [],
+      "unknown": [
+        "UPSTREAM_TABLE_CONSTRAINTS_UNVERIFIED",
+        "INSERT_IGNORE_IDEMPOTENCY_CONSTRAINT_UNVERIFIED"
+      ]
+    },
+    {
+      "name": "membership_observations",
+      "requiredWhen": "always",
+      "sources": [
+        "internal/processor/eligibility.go",
+        "internal/processor/reconciliation.go"
+      ],
+      "columns": [
+        {
+          "name": "id",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/eligibility.go:383",
+            "internal/processor/reconciliation.go:828"
+          ]
+        },
+        {
+          "name": "fulfillment_id",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/eligibility.go:383",
+            "internal/processor/reconciliation.go:828"
+          ]
+        },
+        {
+          "name": "stage_key",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/eligibility.go:383",
+            "internal/processor/reconciliation.go:828"
+          ]
+        },
+        {
+          "name": "purpose",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/eligibility.go:383",
+            "internal/processor/reconciliation.go:828"
+          ]
+        },
+        {
+          "name": "provider_code",
+          "requiredWhen": "always",
+          "typeHint": "INTEGER",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/eligibility.go:383",
+            "internal/processor/reconciliation.go:828"
+          ]
+        },
+        {
+          "name": "account_type",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/eligibility.go:383",
+            "internal/processor/reconciliation.go:828"
+          ]
+        },
+        {
+          "name": "currency",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/eligibility.go:383",
+            "internal/processor/reconciliation.go:828"
+          ]
+        },
+        {
+          "name": "auto_renew",
+          "requiredWhen": "always",
+          "typeHint": "INTEGER",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/eligibility.go:383",
+            "internal/processor/reconciliation.go:828"
+          ]
+        },
+        {
+          "name": "is_overdue",
+          "requiredWhen": "always",
+          "typeHint": "INTEGER",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/eligibility.go:383",
+            "internal/processor/reconciliation.go:828"
+          ]
+        },
+        {
+          "name": "is_delinquent",
+          "requiredWhen": "always",
+          "typeHint": "INTEGER",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/eligibility.go:383",
+            "internal/processor/reconciliation.go:828"
+          ]
+        },
+        {
+          "name": "expire_time",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/eligibility.go:383",
+            "internal/processor/reconciliation.go:828"
+          ]
+        },
+        {
+          "name": "observed_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/eligibility.go:383",
+            "internal/processor/reconciliation.go:828"
+          ]
+        }
+      ],
+      "unique": [],
+      "unknown": [
+        "UPSTREAM_TABLE_CONSTRAINTS_UNVERIFIED"
+      ]
+    },
+    {
+      "name": "membership_outbox",
+      "requiredWhen": "always",
+      "sources": [
+        "internal/processor/dependencies.go",
+        "internal/processor/state.go"
+      ],
+      "columns": [
+        {
+          "name": "id",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/dependencies.go:313",
+            "internal/processor/state.go:142"
+          ]
+        },
+        {
+          "name": "event_type",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/dependencies.go:313",
+            "internal/processor/state.go:142"
+          ]
+        },
+        {
+          "name": "fulfillment_id",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/dependencies.go:313",
+            "internal/processor/state.go:142"
+          ]
+        },
+        {
+          "name": "state_revision",
+          "requiredWhen": "always",
+          "typeHint": "INTEGER",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/dependencies.go:313",
+            "internal/processor/state.go:142"
+          ]
+        },
+        {
+          "name": "payload",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/dependencies.go:313",
+            "internal/processor/state.go:142"
+          ]
+        },
+        {
+          "name": "created_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/dependencies.go:313",
+            "internal/processor/state.go:142"
+          ]
+        }
+      ],
+      "unique": [],
+      "unknown": [
+        "UPSTREAM_TABLE_CONSTRAINTS_UNVERIFIED"
+      ]
+    },
+    {
+      "name": "membership_payment_stages",
+      "requiredWhen": "always",
+      "sources": [
+        "internal/executor/bridge.go",
+        "internal/processor/checkout.go",
+        "internal/processor/payment.go",
+        "internal/processor/reconciliation.go",
+        "internal/processor/session_recovery.go"
+      ],
+      "columns": [
+        {
+          "name": "fulfillment_id",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/payment.go:1657"
+          ]
+        },
+        {
+          "name": "stage_key",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/payment.go:1657"
+          ]
+        },
+        {
+          "name": "attempt_no",
+          "requiredWhen": "always",
+          "typeHint": "INTEGER",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/checkout.go:321",
+            "internal/processor/session_recovery.go:207"
+          ]
+        },
+        {
+          "name": "adapter_version",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/checkout.go:321",
+            "internal/processor/payment.go:1657"
+          ]
+        },
+        {
+          "name": "price_contract_id",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/payment.go:1657"
+          ]
+        },
+        {
+          "name": "state",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/checkout.go:321",
+            "internal/processor/checkout.go:531",
+            "internal/processor/checkout.go:688",
+            "internal/processor/checkout.go:695",
+            "internal/processor/checkout.go:855",
+            "internal/processor/checkout.go:896",
+            "internal/processor/payment.go:1657",
+            "internal/processor/payment.go:536",
+            "internal/processor/reconciliation.go:600",
+            "internal/processor/reconciliation.go:631",
+            "internal/processor/session_recovery.go:207"
+          ]
+        },
+        {
+          "name": "card_id",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/payment.go:1657",
+            "internal/processor/payment.go:536"
+          ]
+        },
+        {
+          "name": "id",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/payment.go:1657"
+          ]
+        },
+        {
+          "name": "expected_tier",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/payment.go:1657"
+          ]
+        },
+        {
+          "name": "price_signal_amount",
+          "requiredWhen": "always",
+          "typeHint": "REAL",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/payment.go:1657"
+          ]
+        },
+        {
+          "name": "price_signal_min",
+          "requiredWhen": "always",
+          "typeHint": "REAL",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/payment.go:1657"
+          ]
+        },
+        {
+          "name": "price_signal_max",
+          "requiredWhen": "always",
+          "typeHint": "REAL",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/payment.go:1657"
+          ]
+        },
+        {
+          "name": "price_signal_time",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/payment.go:1657"
+          ]
+        },
+        {
+          "name": "updated_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/checkout.go:321",
+            "internal/processor/checkout.go:531",
+            "internal/processor/checkout.go:634",
+            "internal/processor/checkout.go:688",
+            "internal/processor/checkout.go:695",
+            "internal/processor/checkout.go:855",
+            "internal/processor/checkout.go:896",
+            "internal/processor/payment.go:1657",
+            "internal/processor/payment.go:536",
+            "internal/processor/reconciliation.go:1086",
+            "internal/processor/reconciliation.go:1176",
+            "internal/processor/reconciliation.go:600",
+            "internal/processor/reconciliation.go:631",
+            "internal/processor/session_recovery.go:207"
+          ]
+        },
+        {
+          "name": "submit_permitted_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/checkout.go:695",
+            "internal/processor/session_recovery.go:207"
+          ]
+        },
+        {
+          "name": "matched_auth_id",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/reconciliation.go:600",
+            "internal/processor/reconciliation.go:631"
+          ]
+        },
+        {
+          "name": "settlement_state",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/reconciliation.go:1176",
+            "internal/processor/reconciliation.go:600",
+            "internal/processor/reconciliation.go:631"
+          ]
+        },
+        {
+          "name": "membership_observation_id",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/reconciliation.go:1086",
+            "internal/processor/reconciliation.go:600",
+            "internal/processor/reconciliation.go:631"
+          ]
+        },
+        {
+          "name": "confirmed_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/reconciliation.go:600"
+          ]
+        },
+        {
+          "name": "created_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/payment.go:1657"
+          ]
+        },
+        {
+          "name": "adapter_path",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "inferred",
+          "writeSources": [
+            "internal/processor/checkout.go:321"
+          ]
+        },
+        {
+          "name": "page_fingerprint",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "inferred",
+          "writeSources": [
+            "internal/processor/checkout.go:321",
+            "internal/processor/checkout.go:634",
+            "internal/processor/checkout.go:688",
+            "internal/processor/checkout.go:695",
+            "internal/processor/session_recovery.go:207"
+          ]
+        },
+        {
+          "name": "page_permit_kind",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "inferred",
+          "writeSources": [
+            "internal/processor/checkout.go:321",
+            "internal/processor/checkout.go:634",
+            "internal/processor/checkout.go:688",
+            "internal/processor/checkout.go:695",
+            "internal/processor/session_recovery.go:207"
+          ]
+        },
+        {
+          "name": "page_control_id",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "inferred",
+          "writeSources": [
+            "internal/processor/checkout.go:321",
+            "internal/processor/checkout.go:634",
+            "internal/processor/checkout.go:688",
+            "internal/processor/checkout.go:695",
+            "internal/processor/session_recovery.go:207"
+          ]
+        },
+        {
+          "name": "page_ready_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "inferred",
+          "writeSources": [
+            "internal/processor/checkout.go:321",
+            "internal/processor/checkout.go:634",
+            "internal/processor/checkout.go:688",
+            "internal/processor/checkout.go:695",
+            "internal/processor/session_recovery.go:207"
+          ]
+        },
+        {
+          "name": "page_facts_json",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "inferred",
+          "writeSources": [
+            "internal/processor/checkout.go:321",
+            "internal/processor/checkout.go:634",
+            "internal/processor/checkout.go:688",
+            "internal/processor/checkout.go:695",
+            "internal/processor/session_recovery.go:207"
+          ]
+        },
+        {
+          "name": "progression_permitted_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "inferred",
+          "writeSources": [
+            "internal/processor/checkout.go:688",
+            "internal/processor/session_recovery.go:207"
+          ]
+        },
+        {
+          "name": "progression_reported_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "inferred",
+          "writeSources": [
+            "internal/processor/checkout.go:855",
+            "internal/processor/session_recovery.go:207"
+          ]
+        },
+        {
+          "name": "submit_reported_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "inferred",
+          "writeSources": [
+            "internal/processor/checkout.go:896",
+            "internal/processor/session_recovery.go:207"
+          ]
+        }
+      ],
+      "unique": [],
+      "unknown": [
+        "UPSTREAM_TABLE_CONSTRAINTS_UNVERIFIED"
+      ]
+    },
+    {
+      "name": "membership_processor_lease",
+      "requiredWhen": "always",
+      "sources": [
+        "internal/store/lease.go"
+      ],
+      "columns": [
+        {
+          "name": "id",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "production",
+          "affinity": "TEXT",
+          "writeSources": [
+            "internal/store/lease.go:41"
+          ]
+        },
+        {
+          "name": "owner",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "production",
+          "affinity": "TEXT",
+          "requireNullable": true,
+          "writeSources": [
+            "internal/store/lease.go:51"
+          ]
+        },
+        {
+          "name": "holder_token",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "production",
+          "affinity": "TEXT",
+          "requireNullable": true,
+          "writeSources": [
+            "internal/store/lease.go:150",
+            "internal/store/lease.go:51"
+          ]
+        },
+        {
+          "name": "epoch",
+          "requiredWhen": "always",
+          "typeHint": "INTEGER",
+          "typeEvidence": "production",
+          "affinity": "INTEGER",
+          "requireNotNull": true,
+          "defaultLiteral": "0",
+          "writeSources": [
+            "internal/store/lease.go:41",
+            "internal/store/lease.go:51"
+          ]
+        },
+        {
+          "name": "status",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "production",
+          "affinity": "TEXT",
+          "requireNotNull": true,
+          "defaultLiteral": "'stopped'",
+          "writeSources": [
+            "internal/store/lease.go:130",
+            "internal/store/lease.go:150",
+            "internal/store/lease.go:41",
+            "internal/store/lease.go:51",
+            "internal/store/lease.go:79"
+          ]
+        },
+        {
+          "name": "version",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "production",
+          "affinity": "TEXT",
+          "requireNullable": true,
+          "writeSources": [
+            "internal/store/lease.go:51"
+          ]
+        },
+        {
+          "name": "started_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "production",
+          "affinity": "TEXT",
+          "requireNullable": true,
+          "writeSources": [
+            "internal/store/lease.go:51"
+          ]
+        },
+        {
+          "name": "heartbeat_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "production",
+          "affinity": "TEXT",
+          "requireNullable": true,
+          "writeSources": [
+            "internal/store/lease.go:150",
+            "internal/store/lease.go:51",
+            "internal/store/lease.go:79"
+          ]
+        },
+        {
+          "name": "expires_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "production",
+          "affinity": "TEXT",
+          "requireNullable": true,
+          "writeSources": [
+            "internal/store/lease.go:150",
+            "internal/store/lease.go:51",
+            "internal/store/lease.go:79"
+          ]
+        },
+        {
+          "name": "last_tick_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "production",
+          "affinity": "TEXT",
+          "requireNullable": true,
+          "writeSources": [
+            "internal/store/lease.go:130"
+          ]
+        },
+        {
+          "name": "last_success_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "production",
+          "affinity": "TEXT",
+          "requireNullable": true,
+          "writeSources": [
+            "internal/store/lease.go:130"
+          ]
+        },
+        {
+          "name": "last_error_code",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "production",
+          "affinity": "TEXT",
+          "requireNullable": true,
+          "writeSources": [
+            "internal/store/lease.go:130",
+            "internal/store/lease.go:51"
+          ]
+        },
+        {
+          "name": "updated_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "production",
+          "affinity": "TEXT",
+          "requireNotNull": true,
+          "writeSources": [
+            "internal/store/lease.go:130",
+            "internal/store/lease.go:150",
+            "internal/store/lease.go:41",
+            "internal/store/lease.go:51",
+            "internal/store/lease.go:79"
+          ]
+        }
+      ],
+      "unique": [],
+      "unknown": [],
+      "primaryKey": [
+        "id"
+      ]
+    },
+    {
+      "name": "products",
+      "requiredWhen": "always",
+      "sources": [
+        "internal/processor/intake.go"
+      ],
+      "columns": [
+        {
+          "name": "id",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture"
+        },
+        {
+          "name": "membership_tier",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture"
+        }
+      ],
+      "unique": [],
+      "unknown": [
+        "UPSTREAM_TABLE_CONSTRAINTS_UNVERIFIED"
+      ]
+    },
+    {
+      "name": "redeem_orders",
+      "requiredWhen": "always",
+      "sources": [
+        "internal/processor/checkout.go",
+        "internal/processor/eligibility.go",
+        "internal/processor/intake.go",
+        "internal/processor/payment.go",
+        "internal/processor/reconciliation.go",
+        "internal/processor/session_recovery.go"
+      ],
+      "columns": [
+        {
+          "name": "id",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture"
+        },
+        {
+          "name": "session_payload",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture"
+        },
+        {
+          "name": "site_id",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture"
+        },
+        {
+          "name": "product_id",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture"
+        },
+        {
+          "name": "status",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/session_recovery.go:111"
+          ]
+        },
+        {
+          "name": "error_message",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/session_recovery.go:111"
+          ]
+        },
+        {
+          "name": "completed_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/session_recovery.go:111"
+          ]
+        },
+        {
+          "name": "updated_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture",
+          "writeSources": [
+            "internal/processor/session_recovery.go:111"
+          ]
+        },
+        {
+          "name": "extension_delivery_status",
+          "requiredWhen": "observed_only",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture"
+        },
+        {
+          "name": "order_no",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture"
+        },
+        {
+          "name": "cdkey_id",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture"
+        },
+        {
+          "name": "extension_delivered_at",
+          "requiredWhen": "observed_only",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture"
+        },
+        {
+          "name": "created_at",
+          "requiredWhen": "always",
+          "typeHint": "TEXT",
+          "typeEvidence": "fixture"
+        }
+      ],
+      "unique": [],
+      "unknown": [
+        "UPSTREAM_TABLE_CONSTRAINTS_UNVERIFIED"
+      ]
+    }
+  ],
+  "unknown": [
+    "EXTERNAL_PRODUCER_CONTRACT_UNVERIFIED",
+    "BUSINESS_ROWS_NOT_INSPECTED",
+    "RUNTIME_GATES_NOT_VERIFIED",
+    "SOURCE_QUIESCENCE_NOT_PROVEN"
+  ]
+}

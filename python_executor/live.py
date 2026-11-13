@@ -21,6 +21,7 @@ from .client import ExecutorAPIError, ExecutorClient, ExecutorLease
 
 CHATGPT_ORIGIN = "https://chatgpt.com"
 PAY_ORIGIN = "https://pay.openai.com"
+FILL_ORIGINS = frozenset({CHATGPT_ORIGIN, PAY_ORIGIN, "https://js.stripe.com"})
 SESSION_COOKIE = "__Secure-next-auth.session-token"
 SESSION_CHUNK_SIZE = 3936
 MAX_TRANSITIONS = 6
@@ -78,6 +79,7 @@ INSPECT_FRAME_JS = r"""
       cvc: has(['#payment-cvcInput', 'input[name="cvc"]', 'input[autocomplete="cc-csc"]']),
       billingName: has(['#billingAddress-nameInput', 'input[name="name"]', 'input[autocomplete="billing name"]']),
       billingLine1: has(['#billingAddress-line1Input', 'input[name="addressLine1"]', 'input[autocomplete="billing address-line1"]']),
+      billingLine2: has(['#billingAddress-line2Input', 'input[name="addressLine2"]', 'input[autocomplete="billing address-line2"]']),
       billingCity: has(['#billingAddress-cityInput', 'input[name="city"]', 'input[autocomplete="billing address-level2"]']),
       billingState: has(['#billingAddress-stateInput', 'select[name="state"]', 'input[autocomplete="billing address-level1"]']),
       billingCountry: has(['#billingAddress-countryInput', 'select[name="country"]', 'select[autocomplete="billing country"]']),
@@ -101,27 +103,90 @@ INSPECT_FRAME_JS = r"""
 """
 
 FILL_FRAME_JS = r"""
-(fragment) => {
-  if (!['https://chatgpt.com', 'https://pay.openai.com', 'https://js.stripe.com'].includes(location.origin)) return {accepted:false,filled:[]};
+async (fragment) => {
+  const allowed = ['https://chatgpt.com', 'https://pay.openai.com', 'https://js.stripe.com'];
+  const refused = () => ({accepted:false,filled:[],rejected:[]});
+  if (!allowed.includes(location.origin)) return refused();
   const selectors = {
     cardNumber: ['#payment-numberInput', 'input[name="number"]', 'input[autocomplete="cc-number"]'], expiry: ['#payment-expiryInput', 'input[name="expiry"]', 'input[autocomplete="cc-exp"]'],
     expiryMonth: ['#payment-expiryMonthInput', 'select[name="exp-month"]'], expiryYear: ['#payment-expiryYearInput', 'select[name="exp-year"]'], cvc: ['#payment-cvcInput', 'input[name="cvc"]', 'input[autocomplete="cc-csc"]'],
     billingName: ['#billingAddress-nameInput', 'input[name="name"]', 'input[autocomplete="billing name"]'], billingLine1: ['#billingAddress-line1Input', 'input[name="addressLine1"]', 'input[autocomplete="billing address-line1"]'],
+    billingLine2: ['#billingAddress-line2Input', 'input[name="addressLine2"]', 'input[autocomplete="billing address-line2"]'],
     billingCity: ['#billingAddress-cityInput', 'input[name="city"]', 'input[autocomplete="billing address-level2"]'], billingState: ['#billingAddress-stateInput', 'select[name="state"]', 'input[autocomplete="billing address-level1"]'],
     billingCountry: ['#billingAddress-countryInput', 'select[name="country"]', 'select[autocomplete="billing country"]'], billingPostal: ['#billingAddress-postalCodeInput', 'input[name="postalCode"]', 'input[autocomplete="billing postal-code"]']
   };
   const find = key => (selectors[key] || []).map(selector => document.querySelector(selector)).find(Boolean) || null;
-  const filled = [];
-  for (const [key, value] of Object.entries(fragment || {})) {
-    if (typeof value !== 'string') continue;
+  const yearMatches = (left, right) => /^\d{2}(?:\d{2})?$/.test(left) && /^\d{2}(?:\d{2})?$/.test(right) &&
+    (left.length === right.length ? left === right : left.slice(-2) === right.slice(-2));
+  const matches = (key, actual, expected) => {
+    if (typeof actual !== 'string' || typeof expected !== 'string' || !expected.trim()) return false;
+    actual = actual.trim(); expected = expected.trim();
+    if (key === 'cardNumber') {
+      const number = value => value.replace(/[\s-]/g, '');
+      return /^\d+$/.test(number(actual)) && number(actual) === number(expected);
+    }
+    if (key === 'expiry') {
+      const parse = value => /^(\d{1,2})\s*\/\s*(\d{2}|\d{4})$/.exec(value);
+      const left = parse(actual), right = parse(expected);
+      return Boolean(left && right && Number(left[1]) >= 1 && Number(left[1]) <= 12 &&
+        Number(left[1]) === Number(right[1]) && yearMatches(left[2], fragment.expiryYear || right[2]));
+    }
+    if (key === 'expiryMonth') return /^\d{1,2}$/.test(actual) && /^\d{1,2}$/.test(expected) &&
+      Number(actual) >= 1 && Number(actual) <= 12 && Number(actual) === Number(expected);
+    if (key === 'expiryYear') return yearMatches(actual, expected);
+    if (key === 'billingCountry') return actual.toUpperCase() === expected.toUpperCase();
+    return actual === expected;
+  };
+  const editable = element => (element instanceof HTMLInputElement || element instanceof HTMLSelectElement) &&
+    !element.disabled && !element.readOnly;
+  const invalid = element => element.validity?.valid === false ||
+    Boolean(element.getAttribute('aria-invalid') && element.getAttribute('aria-invalid').toLowerCase() !== 'false');
+  const optionalBilling = new Set(['billingLine2', 'billingState', 'billingPostal']);
+  const emptyPermitted = (key, element) => optionalBilling.has(key) && element.required !== true &&
+    element.getAttribute('aria-required')?.trim().toLowerCase() !== 'true';
+  const present = new Set(), failed = new Set();
+  for (const key of Object.keys(selectors)) {
+    const value = fragment?.[key];
     const element = find(key); if (!element) continue;
-    const prototype = element instanceof HTMLSelectElement ? HTMLSelectElement.prototype : HTMLInputElement.prototype;
-    const setter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
-    if (setter) setter.call(element, value); else element.value = value;
-    for (const type of ['input', 'change', 'blur']) element.dispatchEvent(new Event(type, {bubbles:true}));
-    filled.push(key);
+    present.add(key);
+    if (typeof value !== 'string' || (!value.trim() && !emptyPermitted(key, element)) || !editable(element)) { failed.add(key); continue; }
+    try {
+      let candidate = value;
+      if (element instanceof HTMLSelectElement && value.trim()) {
+        const options = [...element.options].filter(option => !option.disabled && matches(key, option.value, value));
+        const exact = options.find(option => option.value === value);
+        if (!exact && options.length !== 1) { failed.add(key); continue; }
+        candidate = (exact || options[0]).value;
+      }
+      const prototype = element instanceof HTMLSelectElement ? HTMLSelectElement.prototype : HTMLInputElement.prototype;
+      const setter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
+      if (!setter) { failed.add(key); continue; }
+      setter.call(element, candidate);
+      for (const type of ['input', 'change', 'blur']) element.dispatchEvent(new Event(type, {bubbles:true}));
+    } catch { failed.add(key); }
   }
-  return {accepted:true,filled};
+  // Empty utility frames may never render. They supply no filled-field evidence
+  // and need no render wait; frames containing candidates still must verify.
+  if (present.size === 0) return {accepted:true,filled:[],rejected:[]};
+  // Controlled inputs may reset or replace the node on their next render. A
+  // successful setter alone is not evidence that the form accepted the value.
+  const rendered = await new Promise(resolve => {
+    const timer = setTimeout(() => resolve(false), 1500);
+    requestAnimationFrame(() => requestAnimationFrame(() => { clearTimeout(timer); resolve(true); }));
+  });
+  if (!rendered || !allowed.includes(location.origin)) return refused();
+  const filled = [], rejected = [];
+  for (const key of Object.keys(selectors)) {
+    const value = fragment?.[key];
+    const element = find(key);
+    if (!element && !present.has(key)) continue;
+    const acceptedEmpty = element && typeof value === 'string' && !value.trim() && emptyPermitted(key, element) &&
+      typeof element.value === 'string' && !element.value.trim();
+    if (!element || failed.has(key) || !editable(element) || invalid(element) || (!acceptedEmpty && !matches(key, element.value, value))) rejected.push(key);
+    else if (!acceptedEmpty) filled.push(key);
+  }
+  // Never return card, security-code or billing values to the Python caller.
+  return {accepted:true,filled,rejected};
 }
 """
 
@@ -156,7 +221,7 @@ async () => {
         const subscription = await subscriptionResponse.json();
         const plan = typeof subscription?.plan_type === 'string' ? subscription.plan_type.toLowerCase() : '';
         const activeUntil = Date.parse(typeof subscription?.active_until === 'string' ? subscription.active_until : '');
-        if (['plus','prolite','pro','team','business','enterprise'].includes(plan) && Number.isFinite(activeUntil) && activeUntil > Date.now() && subscription?.is_delinquent !== true) return result({errorKind:'already_subscribed'});
+        if (['go','plus','prolite','pro','team','business','enterprise'].includes(plan) && Number.isFinite(activeUntil) && activeUntil > Date.now() && subscription?.is_delinquent !== true) return result({errorKind:'already_subscribed'});
       }
     }
     const response = await fetch('/backend-api/payments/checkout', {method:'POST', credentials:'include', cache:'no-store', redirect:'error', signal:controller.signal, headers:{...headers,'content-type':'application/json'}, body:JSON.stringify({billing_details:{country:'PH',currency:'PHP'},checkout_ui_mode:'hosted',entry_point:'all_plans_pricing_modal',plan_name:'chatgptplusplan'})});
@@ -380,7 +445,7 @@ class LiveExecutor:
             # Submit activation is the financial boundary. Return the last
             # validated page immediately; Go owns post-submit reconciliation
             # and will classify any later challenge or unknown outcome.
-            client.report(lease, "success", refreshed, diagnostic={"phase": "live", "stateId": refreshed["stateId"], "status": "submitted"})
+            client.report_submitted(lease, refreshed)
             return
         raise ExecutorAPIError("PAYMENT_TRANSITION_LIMIT", 409)
 
@@ -431,7 +496,19 @@ class LiveExecutor:
         permit = client.prepare_action(lease, kind, control_id, facts).get("permitId")
         if not isinstance(permit, str) or not permit: raise ExecutorAPIError("CHECKOUT_ACTION_INVALID", 409)
         client.activate_action(lease, permit)
-        activated = _activate_frames(page, control_id)
+        try:
+            activated = _activate_frames(page, control_id)
+        except ExecutorAPIError as error:
+            # A click may already have reached the page before Playwright
+            # times out. Report uncertainty for this permit, never another
+            # click or a definitive "not-clicked" result.
+            try:
+                client.action_result(lease, permit, "unknown")
+            except ExecutorAPIError:
+                # Keep the financial uncertainty if its report also loses the
+                # connection; the durable activated permit still fences work.
+                pass
+            raise error
         if not activated:
             client.action_result(lease, permit, "not-clicked")
             raise ExecutorAPIError("PERMIT_ACTIVATION_UNCERTAIN", 409)
@@ -524,9 +601,9 @@ def _classify(page: dict[str, Any], lease: ExecutorLease, purpose: str) -> str:
     if page.get("controls", {}).get("challenge"): return "PAYMENT_ACTION_REQUIRED"
     fields = page.get("fields", {}); controls = page.get("controls", {})
     card = fields.get("cardNumber") and fields.get("cvc") and (fields.get("expiry") or fields.get("expiryMonth") and fields.get("expiryYear"))
-    billing = fields.get("billingName") and fields.get("billingCountry") and fields.get("billingPostal")
-    address = sum(bool(fields.get(key)) for key in ("billingLine1", "billingCity", "billingState"))
-    if not card or not billing or address not in {0, 3} or (bool(controls.get("progression")) == bool(controls.get("submit"))): return "UNKNOWN_PAYMENT_STATE"
+    billing = fields.get("billingName") and fields.get("billingCountry")
+    address = sum(bool(fields.get(key)) for key in ("billingLine1", "billingCity"))
+    if not card or not billing or address not in {0, 2} or (bool(controls.get("progression")) == bool(controls.get("submit"))): return "UNKNOWN_PAYMENT_STATE"
     return "PAYMENT_PROGRESSION_READY" if controls.get("progression") else "PAYMENT_FINAL_READY"
 
 
@@ -540,18 +617,54 @@ def _unique_amount(items: list[dict[str, Any]]) -> float | None:
     return float(values.pop()) if len(values) == 1 else None
 
 
+def _allowed_fill_origin(value: Any) -> bool:
+    # Check in Python before serializing any material into the frame. The JS
+    # guard remains a second check if the frame navigates during evaluation.
+    if not isinstance(value, str) or any(ord(char) <= 32 or ord(char) == 127 for char in value):
+        return False
+    try:
+        parsed = urlsplit(value)
+        return (
+            parsed.scheme == "https"
+            and parsed.username is None
+            and parsed.password is None
+            and parsed.port in {None, 443}
+            and f"https://{parsed.hostname}" in FILL_ORIGINS
+        )
+    except ValueError:
+        return False
+
+
 def _fill_frames(page: Any, material: dict[str, Any]) -> None:
     card = material.get("card", {}); billing = material.get("billing", {})
     year = str(card.get("ExpiryYear", card.get("expiryYear", "")))
-    fragment = {"cardNumber": str(card.get("Number", card.get("number", ""))), "expiry": str(card.get("ExpiryMonth", card.get("expiryMonth", ""))) + "/" + year[-2:], "expiryMonth": str(card.get("ExpiryMonth", card.get("expiryMonth", ""))), "expiryYear": year, "cvc": str(card.get("CVV", card.get("cvv", ""))), "billingName": str(billing.get("Name", billing.get("name", ""))), "billingLine1": str(billing.get("Line1", billing.get("line1", ""))), "billingCity": str(billing.get("City", billing.get("city", ""))), "billingState": str(billing.get("State", billing.get("state", ""))), "billingCountry": str(billing.get("Country", billing.get("country", ""))), "billingPostal": str(billing.get("PostalCode", billing.get("postalCode", "")))}
+    fragment = {"cardNumber": str(card.get("Number", card.get("number", ""))), "expiry": str(card.get("ExpiryMonth", card.get("expiryMonth", ""))) + "/" + year[-2:], "expiryMonth": str(card.get("ExpiryMonth", card.get("expiryMonth", ""))), "expiryYear": year, "cvc": str(card.get("CVV", card.get("cvv", ""))), "billingName": str(billing.get("Name", billing.get("name", ""))), "billingLine1": str(billing.get("Line1", billing.get("line1", ""))), "billingLine2": str(billing.get("Line2", billing.get("line2", ""))), "billingCity": str(billing.get("City", billing.get("city", ""))), "billingState": str(billing.get("State", billing.get("state", ""))), "billingCountry": str(billing.get("Country", billing.get("country", ""))), "billingPostal": str(billing.get("PostalCode", billing.get("postalCode", "")))}
     filled: set[str] = set()
     for frame in page.frames:
+        if not _allowed_fill_origin(frame.url):
+            continue
         try:
             result = frame.evaluate(FILL_FRAME_JS, fragment)
-            filled.update(result.get("filled", []))
         except Exception:
-            continue
-    if not ("cardNumber" in filled and "cvc" in filled and ("expiry" in filled or {"expiryMonth", "expiryYear"} <= filled) and "billingName" in filled and "billingCountry" in filled and "billingPostal" in filled):
+            # A failed frame may contain an unaccepted optional address field.
+            # Other frames succeeding cannot prove this form is ready. Do not
+            # expose a Playwright exception that could include field values.
+            raise ExecutorAPIError("PAYMENT_FIELDS_NOT_FILLED", 409) from None
+        if not isinstance(result, dict) or result.get("accepted") is not True:
+            raise ExecutorAPIError("PAYMENT_FIELDS_NOT_FILLED", 409)
+        accepted_fields = result.get("filled")
+        rejected_fields = result.get("rejected")
+        if (
+            not isinstance(accepted_fields, list)
+            or not isinstance(rejected_fields, list)
+            or rejected_fields
+            or any(not isinstance(key, str) or key not in fragment for key in accepted_fields)
+        ):
+            raise ExecutorAPIError("PAYMENT_FIELDS_NOT_FILLED", 409)
+        filled.update(accepted_fields)
+    if not ("cardNumber" in filled and "cvc" in filled and ("expiry" in filled or {"expiryMonth", "expiryYear"} <= filled) and "billingName" in filled and "billingCountry" in filled):
+        raise ExecutorAPIError("PAYMENT_FIELDS_NOT_FILLED", 409)
+    if fragment["billingLine2"].strip() and "billingLine2" not in filled:
         raise ExecutorAPIError("PAYMENT_FIELDS_NOT_FILLED", 409)
 
 
@@ -565,8 +678,14 @@ def _activate_frames(page: Any, control_id: str) -> bool:
                 locator = frame.locator(selector)
                 if locator.count() != 1 or not locator.is_visible() or not locator.is_enabled():
                     continue
-                locator.click(timeout=3000)
-                return True
             except Exception:
+                # No click has been attempted, so another locator is safe.
                 continue
+            try:
+                locator.click(timeout=3000)
+            except Exception as error:
+                # A timeout does not prove that the input was never sent.
+                # A single permit authorizes at most one click attempt.
+                raise ExecutorAPIError("PERMIT_ACTIVATION_UNCERTAIN", 409) from error
+            return True
     return False
