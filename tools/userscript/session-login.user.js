@@ -1,10 +1,10 @@
 // ==UserScript==
 // @name         Anagnoraxis 会话恢复（本机）
 // @namespace    anagnoraxis.local.session-helper
-// @version      0.1.1
+// @version      0.1.2
 // @description  粘贴本人完整 Session，在当前浏览器配置中恢复会话并核对目标身份。需要 Tampermonkey Beta 的 HttpOnly Cookie 权限。
 // @match        https://chatgpt.com/*
-// @run-at       document-end
+// @run-at       document-start
 // @noframes
 // @sandbox      DOM
 // @grant        GM_cookie
@@ -24,7 +24,7 @@
 (function () {
   'use strict';
 
-  const VERSION = '0.1.1';
+  const VERSION = '0.1.2';
   const UI_ID = 'anagnoraxis-session-restore-ui';
   const ORIGIN = 'https://chatgpt.com';
   const HOST = 'chatgpt.com';
@@ -47,6 +47,7 @@
     EXPIRED: '这份 Session 已超过输入记录的有效期，请重新获取。',
     GM_UNAVAILABLE: '当前脚本环境没有所需 GM_cookie 或标签页存储接口。请确认使用 Tampermonkey Beta，并授权此脚本。',
     RUNTIME_UNAVAILABLE: '当前浏览器未提供所需的安全随机数、摘要或请求控制接口。界面已经启动，但不会开始会话恢复。',
+    INPUT_FRAME_UNAVAILABLE: '专用输入区未能初始化，已停用会话恢复。不要把 Session 粘贴到聊天框；请使用独立桌面程序。',
     HTTPONLY_UNAVAILABLE: '未通过 HttpOnly Cookie 能力检查。尚未修改登录 Cookie；请检查 Tampermonkey Beta 的 Cookie 访问权限。',
     PROBE_CLEANUP: '测试 Cookie 未能确认清除，已停止。它不包含登录凭据，并会在一分钟内过期。',
     COOKIE_API: 'Cookie 接口报告失败，未把该操作视为成功。',
@@ -401,16 +402,26 @@
   }
   if (typeof window === 'undefined' || window.top !== window.self || location.origin !== ORIGIN) return;
 
+  // Register early. This stops a misplaced paste's native action while our
+  // panel is open, without reading the clipboard. It cannot undo a listener
+  // that ran earlier. Correctly targeted input uses a separate iframe document
+  // so its keyboard/clipboard events never traverse the parent document.
+  let misplacedPaste = null;
+  window.addEventListener('paste', event => {
+    if (misplacedPaste) misplacedPaste(event);
+  }, { capture: true });
+
   function mount() {
     if (document.getElementById(UI_ID)) return;
     const host = document.createElement('div');
     host.id = UI_ID;
     host.setAttribute('data-version', VERSION);
-    host.style.cssText = 'position:fixed;right:18px;bottom:18px;z-index:2147483000;';
+    host.style.cssText = 'position:fixed;right:18px;bottom:18px;z-index:2147483647;pointer-events:auto;';
     const root = host.attachShadow({ mode: 'closed' });
     const style = document.createElement('style');
     style.textContent = `:host{all:initial;font:14px/1.6 system-ui,-apple-system,sans-serif;color:#16251f}*{box-sizing:border-box}button,textarea{font:inherit}button{cursor:pointer;border:0;border-radius:9px;padding:10px 14px;font-weight:650}.toggle,.start{background:#176647;color:white}.panel{display:none;width:min(460px,calc(100vw - 36px));max-height:calc(100vh - 50px);overflow:auto;background:#fafcfb;border:1px solid #cbded3;border-radius:15px;padding:20px;box-shadow:0 12px 50px #0003}.panel.open{display:block}.top{display:flex;align-items:center;justify-content:space-between;gap:16px}h2{font-size:18px;margin:0}.close{background:#e9efec;padding:5px 10px}.note{font-size:12px;color:#556c60;margin:12px 0}textarea{width:100%;height:160px;padding:10px;border:1px solid #b8c9c0;border-radius:8px;resize:vertical;background:white;color:#17251f}textarea:focus{outline:2px solid #267856;outline-offset:1px}.actions{display:flex;gap:8px;margin-top:10px}.clear{background:#e9efec}.start{flex:1}button:disabled{opacity:.5;cursor:default}ol{margin:16px 0 8px;padding-left:26px;font-size:13px}li{padding:3px 0;color:#64766b}li[data-state=running]{color:#99690a;font-weight:700}li[data-state=done]{color:#176647}li[data-state=error]{color:#a52b29}.status{font-size:13px;white-space:pre-wrap;overflow-wrap:anywhere;margin-top:12px;padding:10px;background:#eef4f0;border-radius:8px}.status.error{background:#fff0ed;color:#8d2825}.status.success{background:#e2f3e8;color:#145032}.footer{font-size:11px;color:#65756b;margin:10px 0 0}`;
     root.append(style);
+    style.textContent += '.panel{overscroll-behavior:contain;isolation:isolate;border:2px solid #176647}.input-frame{display:block;width:100%;height:190px;border:2px solid #386cb0;border-radius:8px;background:white;pointer-events:auto}.focus-control{background:#e6eefb;color:#163c70;margin:8px 0}.input-focus{font-size:12px;padding:8px;border-radius:6px;background:#fff4dc;color:#765400}.input-focus.ready{background:#def3e6;color:#165736}';
     const toggle = document.createElement('button'); toggle.className = 'toggle'; toggle.textContent = '会话恢复';
     const panel = document.createElement('section'); panel.className = 'panel'; panel.setAttribute('aria-label', '会话恢复');
     const top = document.createElement('div'); top.className = 'top';
@@ -419,35 +430,117 @@
     top.append(heading, close);
     const note = document.createElement('p'); note.className = 'note';
     note.textContent = '需要 Tampermonkey Beta 及 HttpOnly Cookie 权限。此操作会替换当前浏览器配置的 ChatGPT 登录，影响同一配置中的其他标签页；新标签页不代表账号隔离。';
-    const label = document.createElement('label'); label.textContent = '完整 Session JSON';
+    const label = document.createElement('div'); label.textContent = '完整 Session JSON（下方蓝框内的独立输入区）';
     const input = document.createElement('textarea'); input.placeholder = '在这里粘贴完整 Session，包含 sessionToken 和账号身份字段。';
     input.setAttribute('aria-label', '完整 Session JSON'); input.autocomplete = 'off'; input.spellcheck = false; input.setAttribute('autocapitalize', 'off');
-    label.append(input);
+    input.setAttribute('autocorrect', 'off'); input.setAttribute('data-gramm', 'false');
+    input.style.cssText = 'box-sizing:border-box;display:block;width:100%;height:178px;margin:0;padding:10px;border:1px solid #9eb6da;border-radius:5px;resize:none;font:13px/1.5 ui-monospace,monospace;background:#fff;color:#17251f;pointer-events:auto;';
+    input.disabled = true;
+    const inputFrame = document.createElement('iframe'); inputFrame.className = 'input-frame';
+    inputFrame.title = '会话恢复专用输入区';
+    inputFrame.setAttribute('sandbox', 'allow-same-origin');
+    inputFrame.setAttribute('referrerpolicy', 'no-referrer');
+    // Initial about:blank document; no srcdoc/innerHTML sink, inline script,
+    // external URL, clipboard read permission, postMessage or storage is used.
+    const focusInput = document.createElement('button'); focusInput.className = 'focus-control';
+    focusInput.textContent = '点击聚焦专用输入区';
+    const inputFocus = document.createElement('div'); inputFocus.className = 'input-focus';
+    inputFocus.setAttribute('role', 'status'); inputFocus.textContent = '正在建立专用输入区，请先不要粘贴。';
+    label.append(focusInput, inputFrame, inputFocus);
     const actions = document.createElement('div'); actions.className = 'actions';
     const start = document.createElement('button'); start.className = 'start'; start.textContent = '替换登录并验证';
     const clear = document.createElement('button'); clear.className = 'clear'; clear.textContent = '清空'; actions.append(start, clear);
+    for (const button of [toggle, close, start, clear, focusInput]) button.type = 'button';
     const list = document.createElement('ol'); const rows = PHASES.map(name => { const row = document.createElement('li'); row.textContent = name; list.append(row); return row; });
     const status = document.createElement('div'); status.className = 'status'; status.setAttribute('role', 'status'); status.textContent = '脚本界面已运行。等待你粘贴完整 Session。';
     const footer = document.createElement('p'); footer.className = 'footer'; footer.textContent = '仅手动启动；不保存输入、不连接第三方服务、不付款。刷新后核对实际账号，才报告登录成功。';
     panel.append(top, note, label, actions, list, status, footer); root.append(panel, toggle); document.documentElement.append(host);
-    let busy = false; let currentPhase = 0;
-    function open() { panel.classList.add('open'); toggle.hidden = true; }
-    function setBusy(value) { busy = value; start.disabled = value; clear.disabled = value; input.disabled = value; }
+    let busy = false; let currentPhase = 0; let inputReady = false; let inputFailed = false;
+    let capabilitiesReady = false; let inputDocument = null;
+    function updateControls() {
+      start.disabled = busy || !inputReady || inputFailed || !capabilitiesReady;
+      clear.disabled = busy; input.disabled = busy || !inputReady || inputFailed || !capabilitiesReady;
+      focusInput.disabled = input.disabled;
+    }
+    function updateFocus() {
+      const focused = inputReady && !input.disabled && inputDocument &&
+        inputDocument.activeElement === input && inputDocument.hasFocus();
+      inputFocus.className = 'input-focus' + (focused ? ' ready' : '');
+      inputFocus.textContent = focused ? '输入焦点已在蓝框内。现在可以粘贴；这里只接收输入，不会发送聊天。' :
+        input.disabled ? '专用输入区暂未启用，请查看面板状态。不要在聊天输入框粘贴 Session。' :
+        '尚未聚焦专用输入区。先点击蓝框或上方聚焦按钮，看到绿色提示后再粘贴。';
+    }
+    function focusEditor() {
+      if (input.disabled || !inputReady) return;
+      input.focus({ preventScroll: true }); updateFocus();
+    }
+    function open(focus) { panel.classList.add('open'); toggle.hidden = true; if (focus === true) focusEditor(); }
+    function setBusy(value) { busy = value; updateControls(); updateFocus(); }
     function phase(number, state) { currentPhase = number; rows[number - 1].dataset.state = state; }
     function report(error) {
       const safe = safeError(error); status.className = 'status error'; status.textContent = safe.message + '\n错误代码：' + safe.code;
       if (currentPhase) rows[currentPhase - 1].dataset.state = 'error';
       open();
     }
-    toggle.addEventListener('click', open);
+    toggle.addEventListener('click', () => open(true));
     close.addEventListener('click', () => { input.value = ''; panel.classList.remove('open'); toggle.hidden = false; });
-    clear.addEventListener('click', () => { input.value = ''; input.focus(); });
+    clear.addEventListener('click', () => { input.value = ''; focusEditor(); });
+    focusInput.addEventListener('click', focusEditor);
+    input.addEventListener('pointerdown', focusEditor);
+    input.addEventListener('focus', updateFocus);
+    input.addEventListener('blur', updateFocus);
+    // Native paste is retained in the child textarea; never manually route
+    // clipboard data into any parent-page editor or read clipboard contents.
+    input.addEventListener('paste', event => {
+      if (!inputDocument || inputDocument.activeElement !== input || !inputDocument.hasFocus() || input.disabled) {
+        event.preventDefault();
+      }
+      event.stopImmediatePropagation();
+    });
+    for (const name of ['keydown', 'keyup', 'beforeinput', 'input', 'copy', 'cut', 'drop', 'wheel']) {
+      input.addEventListener(name, event => { event.stopPropagation(); }, { passive: name === 'wheel' });
+    }
+    // Controls are outside the iframe. Keep their bubbling events from page
+    // shortcuts, without canceling their normal button/editing behavior.
+    for (const name of ['click', 'pointerdown', 'keydown', 'keyup']) {
+      root.addEventListener(name, event => { event.stopPropagation(); });
+    }
+    misplacedPaste = event => {
+      if (!panel.classList.contains('open')) return;
+      event.preventDefault(); event.stopImmediatePropagation();
+      inputFocus.className = 'input-focus';
+      inputFocus.textContent = '粘贴焦点不在专用输入区，已停止默认粘贴。请检查聊天输入框，点击聚焦按钮后重新粘贴。';
+    };
+    function inputUnavailable() {
+      input.value = ''; inputReady = false; inputFailed = true;
+      updateControls(); report(new FlowError('INPUT_FRAME_UNAVAILABLE'));
+    }
+    function initializeInput() {
+      if (inputFailed) return;
+      try {
+        const currentDocument = inputFrame.contentDocument;
+        if (!currentDocument || !currentDocument.body || typeof currentDocument.hasFocus !== 'function') return;
+        if (currentDocument !== inputDocument) {
+          input.value = '';
+          currentDocument.body.style.cssText = 'margin:0;padding:4px;background:#fff;overflow:hidden;';
+          currentDocument.body.append(input);
+          inputDocument = currentDocument;
+        }
+        inputReady = input.ownerDocument === currentDocument && input.isConnected;
+        if (!inputReady) { inputUnavailable(); return; }
+        updateControls(); updateFocus();
+      } catch { inputUnavailable(); }
+    }
+    inputFrame.addEventListener('load', initializeInput);
+    inputFrame.addEventListener('error', inputUnavailable);
+    initializeInput();
+    if (!inputReady) setTimeout(() => { if (!inputReady) inputUnavailable(); }, 2000);
     window.addEventListener('pagehide', () => { input.value = ''; });
     // UI is visible even when Cookie access is unavailable. Menu registration is
     // optional and must not prevent the page button or diagnostics from working.
     open();
     if (typeof GM_registerMenuCommand === 'function') {
-      try { GM_registerMenuCommand('打开会话恢复面板 · v' + VERSION, open); }
+      try { GM_registerMenuCommand('打开会话恢复面板 · v' + VERSION, () => open(true)); }
       catch { /* The visible page panel remains available. */ }
     }
     let env;
@@ -464,9 +557,10 @@
         navigate: () => { status.textContent = '写入回读通过，正在刷新；刷新后会继续第六步。'; location.replace(ORIGIN + '/'); },
         getSession: () => fetchCurrentSession(fetch.bind(window))
       };
-    } catch (error) { report(error); start.disabled = true; return; }
+      capabilitiesReady = true; updateControls();
+    } catch (error) { report(error); capabilitiesReady = false; updateControls(); return; }
     start.addEventListener('click', async () => {
-      if (busy) return;
+      if (busy || !inputReady || inputFailed || !capabilitiesReady) return;
       let raw = input.value; input.value = ''; setBusy(true);
       for (const row of rows) delete row.dataset.state;
       status.className = 'status'; status.textContent = '正在检查输入及 Cookie 权限。';

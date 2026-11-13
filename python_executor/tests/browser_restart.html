@@ -1,0 +1,73 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Offline restart acceptance fixture</title>
+<!-- Entirely synthetic. No SDK, account, payment endpoint or provider request. -->
+<form id="fixture" autocomplete="off"></form>
+<script>
+(() => {
+  const params = new URL(location.href).searchParams;
+  const mode = params.get('mode') || 'main';
+  const variant = params.get('variant') || 'formatted';
+  const form = document.querySelector('#fixture');
+  window.restartFixture = {ready:false, writes:0, clicks:0, submissions:0};
+  form.addEventListener('input', () => window.restartFixture.writes++);
+  form.addEventListener('submit', event => {
+    event.preventDefault(); window.restartFixture.submissions++;
+  });
+  // Count imperative form submissions as well as button-based submission.
+  HTMLFormElement.prototype.submit = function () { window.restartFixture.submissions++; };
+  HTMLFormElement.prototype.requestSubmit = function () { window.restartFixture.submissions++; };
+  const input = (id, required=true) => {
+    const element = document.createElement('input');
+    element.type = 'text'; element.id = id; element.required = required;
+    form.append(element); return element;
+  };
+  const select = (id, choices) => {
+    const element = document.createElement('select'); element.id = id; element.required = true;
+    for (const choice of ['', ...choices]) {
+      const option = document.createElement('option'); option.value = choice; option.textContent = choice;
+      element.append(option);
+    }
+    form.append(element); return element;
+  };
+  if (mode === 'main') {
+    for (const id of ['name', 'line1', 'city', 'state', 'postalCode']) input('billingAddress-' + id + 'Input');
+    input('billingAddress-line2Input', false);
+    select('billingAddress-countryInput', ['PH', 'EG', 'US']);
+    const finalButton = document.createElement('button');
+    finalButton.id = 'payment-submit'; finalButton.type = 'submit'; finalButton.textContent = 'Fixture only';
+    finalButton.addEventListener('click', () => window.restartFixture.clicks++);
+    form.append(finalButton);
+    for (const [name, origin, frameMode] of [
+      ['synthetic-card', 'https://card.fixture.invalid', 'card'],
+      ['synthetic-foreign', 'https://foreign.fixture.invalid', 'foreign']
+    ]) {
+      const frame = document.createElement('iframe'); frame.name = name;
+      frame.src = origin + '/fixture?mode=' + frameMode + '&variant=' + variant;
+      document.body.append(frame);
+    }
+  } else {
+    const number = input('payment-numberInput');
+    if (variant === 'split') {
+      select('payment-expiryMonthInput', ['01', '02', '03']);
+      select('payment-expiryYearInput', ['30', '31', '32']);
+    } else {
+      const expiry = input('payment-expiryInput');
+      if (variant === 'formatted') {
+        number.addEventListener('input', event => {
+          event.target.value = event.target.value.replace(/\s/g, '').replace(/(.{4})(?=.)/g, '$1 ');
+        });
+        expiry.addEventListener('input', event => {
+          const parts = /^(\d{1,2})\/(\d{2})$/.exec(event.target.value);
+          if (parts) event.target.value = parts[1].padStart(2, '0') + ' / 20' + parts[2];
+        });
+      }
+    }
+    input('payment-cvcInput');
+    if (variant === 'reject-cvc') {
+      document.querySelector('#payment-cvcInput').addEventListener('input', event => { event.target.value = ''; });
+    }
+  }
+  window.restartFixture.ready = true;
+})();
+</script>

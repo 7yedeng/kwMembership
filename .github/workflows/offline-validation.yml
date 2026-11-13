@@ -77,6 +77,10 @@ jobs:
               print('Offline validation requires every test to execute; skipped tests fail CI.', file=sys.stderr)
           raise SystemExit(0 if result.wasSuccessful() and not result.skipped else 1)
           PY
+      - name: Verify three fresh prepayment browser lifecycles
+        run: python scripts/verify-prepayment-restarts.py --require-browser --output "$RUNNER_TEMP/prepayment-restarts.json"
+      - name: Verify userscript input isolation in real Chromium
+        run: python tools/userscript/session-login.browser.test.py
 
   chromium-headed-runtime:
     if: github.repository == '7yedeng/kwMembership'

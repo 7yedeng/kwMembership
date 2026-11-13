@@ -2,6 +2,8 @@
 
 更新：2026-11-14，北京时间。分支：`feature/modular-single-flow-20261114`。
 
+后续迭代补充：[本机安装与空白页/粘贴诊断](SESSION_INSTALLATION_AND_DIAGNOSTICS.md)、[付款前三轮重新启动验收](PREPAYMENT_RESTART_ACCEPTANCE.md)、[付款及清算对账验收](PAYMENT_RECONCILIATION_ACCEPTANCE.md)。这些记录保留真实现场、合成浏览器和业务验收的区别；以下早期执行证据不替代最新 PR 的 CI 结果。
+
 ## 用户目标与当前授权
 
 目标是用户提供 Session，配置一个可更换的卡台后，自动执行一笔完整会员充值，再扩展排队和并发。优先 Go 套餐。会话恢复可由用户自己输入材料验收；浏览器显示必须是可拆卸的观察能力。
@@ -12,8 +14,8 @@
 
 | 节点 | 所有者/接口 | 本轮结果 | 真实验收状态 |
 | --- | --- | --- | --- |
-| Session 输入与恢复 | sessionrestore.Browser / Factory；membership-session | 独立核心、CLI、桌面输入界面；Cookie回读、身份匹配、取消和清理 | 待用户输入真实Session验收 |
-| 浏览器显示 | sessionrestore.Options.ShowBrowser / HoldOpen | 可选观察，不属于卡台或业务状态机 | 桌面/真实账号仍待验收 |
+| Session 输入与恢复 | sessionrestore.Browser / Factory；membership-session | 独立核心、CLI、桌面输入界面；Cookie回读、身份匹配、取消和清理 | 用户确认本机两个账号Session测试成功 |
+| 浏览器显示 | sessionrestore.Options.ShowBrowser / HoldOpen | 可选观察，不属于卡台或业务状态机 | 用户已验收本机可见模式；服务器模式待验收 |
 | 结账建单 | checkout.Executor；既有preflight | 保留Plus建单、Go手工观察范围，不猜测Go SKU | Go自动建单未完成 |
 | 金额确认 | checkout.ReviewQuote；membership-review | 整数金额、税/折扣/总额核验，受控确认摘要 | 目前输入证据来自本地，未自动采集实时报价 |
 | 卡台接入 | provider.CardPlatformRegistry / CardPlatform | 两内置适配器，统一构造接口，配置key隔离修复 | 未调用真实开卡/充值 |
@@ -56,7 +58,7 @@
 
 ## 下一步的单笔验收顺序
 
-1. 用户用桌面工具粘贴真实Session，得到完整成功报告。仅上传脱敏代码/阶段/布尔结果；不用再次发送凭据。
+1. 已完成用户侧本机会话恢复验收：用户反馈两个账号Session测试成功。该结论不替代后续服务器与真实结账验收，无需再次发送凭据。
 2. 在正式允许访问的环境，观察目标Go账号的真实套餐、结账入口、字段与最终总额，建立经过审阅的页面适配器。缺少字段时保持未知。
 3. 只接一家卡台，核对产品、卡资料、可用余额和交易查询；使用实际登记账单资料。
 4. 先验收到最终付款前，准确读回表单和金额；不得把长链、短链或填卡返回ok当成扣款证明。

@@ -412,6 +412,8 @@ func TestMatchPaymentTransactionDelta(t *testing.T) {
 	base := CardTransaction{
 		AuthAmountCents:    cents(1624),
 		SettleAmountCents:  cents(0),
+		AuthCurrency:       "USD",
+		SettleCurrency:     "USD",
 		MerchantNormalized: "OPENAI",
 		Type:               TransactionTypeAuthorization,
 	}
@@ -425,7 +427,7 @@ func TestMatchPaymentTransactionDelta(t *testing.T) {
 	}{
 		{
 			name: "exactly one new authorization settles",
-			options: PaymentDeltaOptions{BeforeAuthIDs: []string{"old"}, MinCents: 1500, MaxCents: 2000, Transactions: []CardTransaction{
+			options: PaymentDeltaOptions{ExpectedCurrency: "USD", BeforeAuthIDs: []string{"old"}, MinCents: 1500, MaxCents: 2000, Transactions: []CardTransaction{
 				withTransaction(base, "old", TransactionStatusComplete),
 				withTransaction(base, " new ", TransactionStatusPending),
 				withSettlement(withTransaction(base, "new", TransactionStatusComplete), 1624),
@@ -434,7 +436,7 @@ func TestMatchPaymentTransactionDelta(t *testing.T) {
 		},
 		{
 			name: "multiple matches are uncertain",
-			options: PaymentDeltaOptions{MinCents: 1500, MaxCents: 2000, Transactions: []CardTransaction{
+			options: PaymentDeltaOptions{ExpectedCurrency: "USD", MinCents: 1500, MaxCents: 2000, Transactions: []CardTransaction{
 				withTransaction(base, "new-1", TransactionStatusPending),
 				withTransaction(base, "new-2", TransactionStatusPending),
 			}},
@@ -442,21 +444,21 @@ func TestMatchPaymentTransactionDelta(t *testing.T) {
 		},
 		{
 			name: "one decline",
-			options: PaymentDeltaOptions{MinCents: 1500, MaxCents: 2000, Transactions: []CardTransaction{
+			options: PaymentDeltaOptions{ExpectedCurrency: "USD", MinCents: 1500, MaxCents: 2000, Transactions: []CardTransaction{
 				withTransaction(base, "declined", TransactionStatusDeclined),
 			}},
 			wantOutcome: PaymentOutcomeDeclined, wantTransaction: "declined",
 		},
 		{
 			name: "x20 recognition includes historical PH settlement",
-			options: PaymentDeltaOptions{Tier: TierX20, MinCents: 14000, MaxCents: 16000, Transactions: []CardTransaction{
+			options: PaymentDeltaOptions{ExpectedCurrency: "USD", Tier: TierX20, MinCents: 14000, MaxCents: 16000, Transactions: []CardTransaction{
 				withSettlement(withTransaction(base, "x20-ph", TransactionStatusComplete), 13006),
 			}},
 			wantOutcome: PaymentOutcomeMatched, wantTransaction: "x20-ph",
 		},
 		{
 			name: "latest higher-ranked status wins",
-			options: PaymentDeltaOptions{MinCents: 1500, MaxCents: 2000, Transactions: []CardTransaction{
+			options: PaymentDeltaOptions{ExpectedCurrency: "USD", MinCents: 1500, MaxCents: 2000, Transactions: []CardTransaction{
 				withTransaction(base, "same", TransactionStatusPending),
 				withTransaction(base, "same", TransactionStatusDeclined),
 			}},
@@ -464,7 +466,7 @@ func TestMatchPaymentTransactionDelta(t *testing.T) {
 		},
 		{
 			name: "multiple declines",
-			options: PaymentDeltaOptions{MinCents: 1500, MaxCents: 2000, Transactions: []CardTransaction{
+			options: PaymentDeltaOptions{ExpectedCurrency: "USD", MinCents: 1500, MaxCents: 2000, Transactions: []CardTransaction{
 				withTransaction(base, "declined-1", TransactionStatusDeclined),
 				withTransaction(base, "declined-2", TransactionStatusDeclined),
 			}},
@@ -472,7 +474,7 @@ func TestMatchPaymentTransactionDelta(t *testing.T) {
 		},
 		{
 			name: "refund is not effective",
-			options: PaymentDeltaOptions{MinCents: 1500, MaxCents: 2000, Transactions: []CardTransaction{
+			options: PaymentDeltaOptions{ExpectedCurrency: "USD", MinCents: 1500, MaxCents: 2000, Transactions: []CardTransaction{
 				func() CardTransaction {
 					transaction := withTransaction(base, "refund", TransactionStatusComplete)
 					transaction.Type = TransactionTypeRefund
@@ -502,6 +504,63 @@ func TestMatchPaymentTransactionDelta(t *testing.T) {
 	}
 	if _, err := MatchPaymentTransactionDelta(PaymentDeltaOptions{MinCents: 2000, MaxCents: 1000}); !errors.Is(err, ErrInvalidTransactionRange) {
 		t.Fatalf("invalid range error = %v", err)
+	}
+}
+
+func TestPaymentTransactionMatchingRequiresAmountCurrencyEvidence(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, authCurrency, settleCurrency string
+		settleCents                        int64
+		want                               PaymentMatchOutcome
+	}{
+		{"USD authorization", "USD", "", 0, PaymentOutcomeMatched},
+		{"authorization currency missing", "", "", 0, PaymentOutcomeUncertain},
+		{"same numeric authorization in EGP", "EGP", "", 0, PaymentOutcomeUncertain},
+		{"USD settlement of PHP authorization", "PHP", "USD", 2000, PaymentOutcomeMatched},
+		{"settlement currency cannot come from authorization", "USD", "", 2000, PaymentOutcomeUncertain},
+		{"settlement currency differs from authorization", "USD", "EGP", 2000, PaymentOutcomeUncertain},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			transaction := CardTransaction{
+				AuthID: "new", AuthAmountCents: cents(2000), SettleAmountCents: cents(tc.settleCents),
+				AuthCurrency: tc.authCurrency, SettleCurrency: tc.settleCurrency,
+				Type: TransactionTypeAuthorization, Status: TransactionStatusPending, MerchantNormalized: "OPENAI",
+			}
+			result, err := MatchPaymentTransactionDelta(PaymentDeltaOptions{
+				ExpectedCurrency: "USD", MinCents: 1800, MaxCents: 2500, Transactions: []CardTransaction{transaction},
+			})
+			if err != nil || result.Outcome != tc.want {
+				t.Fatalf("currency evidence: outcome=%s want=%s err=%v", result.Outcome, tc.want, err)
+			}
+			if tc.want == PaymentOutcomeUncertain && (result.Transaction != nil || result.Reason != "PAYMENT_CURRENCY_UNCONFIRMED") {
+				t.Fatalf("currency mismatch was accepted as known success or decline: %+v", result)
+			}
+		})
+	}
+	for _, currency := range []string{"", "EGP", "PHP"} {
+		if _, err := MatchPaymentTransactionDelta(PaymentDeltaOptions{
+			ExpectedCurrency: currency, MinCents: 1800, MaxCents: 2500,
+		}); !errors.Is(err, ErrInvalidTransactionCurrency) {
+			t.Fatalf("missing/unsupported price currency %q accepted: %v", currency, err)
+		}
+	}
+}
+
+func TestPaymentCompleteSettlementRequiresItsOwnPositiveAmount(t *testing.T) {
+	t.Parallel()
+	for _, settleAmount := range []*int64{nil, cents(0), cents(-100)} {
+		transaction := CardTransaction{
+			AuthID: "new", AuthAmountCents: cents(2000), AuthCurrency: "USD",
+			SettleAmountCents: settleAmount, SettleCurrency: "USD",
+			Type: TransactionTypeSettlement, Status: TransactionStatusComplete, MerchantNormalized: "OPENAI",
+		}
+		result, err := MatchPaymentTransactionDelta(PaymentDeltaOptions{
+			ExpectedCurrency: "USD", MinCents: 1800, MaxCents: 2500, Transactions: []CardTransaction{transaction},
+		})
+		if err != nil || result.Outcome != PaymentOutcomeUncertain || result.Transaction != nil || result.Reason != "SETTLEMENT_AMOUNT_UNCONFIRMED" {
+			t.Fatalf("settlement without its own positive amount borrowed authorization: result=%+v err=%v", result, err)
+		}
 	}
 }
 

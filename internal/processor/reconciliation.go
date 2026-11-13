@@ -418,16 +418,22 @@ func (p *Processor) rcApplyPaymentEvidence(ctx context.Context, fulfillmentID, k
 		if err != nil {
 			return err
 		}
-		transactions, err := p.rcPersistManagedTransactions(ctx, tx, stage.CardID.String, events, now)
+		if _, err := p.rcPersistManagedTransactions(ctx, tx, stage.CardID.String, events, now); err != nil {
+			return err
+		}
+		transactions, err := rcLoadSubmittedTransactions(ctx, tx, stage)
 		if err != nil {
 			return err
 		}
 		matched, err := domain.MatchPaymentTransactionDelta(domain.PaymentDeltaOptions{
 			BeforeAuthIDs: snapshot.AuthIDs,
 			Tier:          domain.Tier(stage.ExpectedTier),
-			MinCents:      minCents,
-			MaxCents:      maxCents,
-			Transactions:  transactions,
+			// price_signal_* is persisted by paymentEnsureStageSnapshots in USD.
+			// Checkout/account currency is a separate fact, never an FX conversion.
+			ExpectedCurrency: "USD",
+			MinCents:         minCents,
+			MaxCents:         maxCents,
+			Transactions:     transactions,
 		})
 		if err != nil {
 			return codedWrap("PAYMENT_STAGE_EVIDENCE_INCOMPLETE", "match payment transaction", err)
@@ -462,7 +468,7 @@ func (p *Processor) rcApplyPaymentEvidence(ctx context.Context, fulfillmentID, k
 		}
 		if reason == "NO_MATCH" {
 			return p.rcRecordDueNoPaymentChecks(ctx, tx, fulfillmentID, key, stage.SubmitPermittedAt,
-				snapshot.AuthIDs, events, observation, now)
+				snapshot.AuthIDs, transactions, observation, now)
 		}
 		return nil
 	})
@@ -501,11 +507,12 @@ func (p *Processor) rcApplyProgressionEvidence(ctx context.Context, fulfillmentI
 			return err
 		}
 		matched, err := domain.MatchPaymentTransactionDelta(domain.PaymentDeltaOptions{
-			BeforeAuthIDs: snapshot.AuthIDs,
-			Tier:          domain.Tier(stage.ExpectedTier),
-			MinCents:      minCents,
-			MaxCents:      maxCents,
-			Transactions:  transactions,
+			BeforeAuthIDs:    snapshot.AuthIDs,
+			Tier:             domain.Tier(stage.ExpectedTier),
+			ExpectedCurrency: "USD",
+			MinCents:         minCents,
+			MaxCents:         maxCents,
+			Transactions:     transactions,
 		})
 		if err != nil {
 			return codedWrap("PAYMENT_STAGE_EVIDENCE_INCOMPLETE", "match preauthorization transaction", err)
@@ -597,10 +604,14 @@ func (p *Processor) rcApplyMatchedPayment(ctx context.Context, tx *sql.Tx, fulfi
 		return coded("PAYMENT_MATCH_CONFLICT", "payment stage is already bound to another authorization")
 	}
 	at := store.ISO(now)
+	settlementState := domain.TransactionStatusPending
+	if matched.Type == domain.TransactionTypeSettlement && matched.Status == domain.TransactionStatusComplete {
+		settlementState = domain.TransactionStatusComplete
+	}
 	if _, err := tx.ExecContext(ctx, `UPDATE membership_payment_stages
     SET state='confirmed',matched_auth_id=?,settlement_state=?,membership_observation_id=?,
         confirmed_at=COALESCE(confirmed_at,?),updated_at=? WHERE id=?`,
-		matched.AuthID, matched.Status, observationID, at, at, stage.ID); err != nil {
+		matched.AuthID, settlementState, observationID, at, at, stage.ID); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE membership_action_permits
@@ -766,9 +777,9 @@ func (p *Processor) rcPersistManagedTransactions(ctx context.Context, tx *sql.Tx
       ON CONFLICT(card_id,auth_id) DO UPDATE SET
         auth_time=COALESCE(excluded.auth_time,managed_card_transactions.auth_time),
         auth_amount=CASE WHEN excluded.auth_amount>0 THEN excluded.auth_amount ELSE managed_card_transactions.auth_amount END,
-        auth_currency=COALESCE(excluded.auth_currency,managed_card_transactions.auth_currency),
+        auth_currency=CASE WHEN excluded.auth_amount>0 THEN excluded.auth_currency ELSE managed_card_transactions.auth_currency END,
         settle_amount=CASE WHEN excluded.settle_amount>0 THEN excluded.settle_amount ELSE managed_card_transactions.settle_amount END,
-        settle_currency=COALESCE(excluded.settle_currency,managed_card_transactions.settle_currency),
+        settle_currency=CASE WHEN excluded.settle_amount>0 THEN excluded.settle_currency ELSE managed_card_transactions.settle_currency END,
         type=excluded.type,status=excluded.status,
         merchant_normalized=CASE WHEN excluded.merchant_normalized='OPENAI' THEN 'OPENAI' ELSE managed_card_transactions.merchant_normalized END,
         authorization_seen=MAX(managed_card_transactions.authorization_seen,excluded.authorization_seen),
@@ -787,6 +798,43 @@ func (p *Processor) rcPersistManagedTransactions(ctx context.Context, tx *sql.Tx
 		return nil, err
 	}
 	return result, nil
+}
+
+// Keep transaction evidence across successful but incomplete provider pages and
+// worker restarts. Only records first observed after this stage's durable submit
+// boundary are eligible; old card history and another card's identical auth ID
+// must never become proof of this payment. The immutable auth snapshot is still
+// applied by the matcher, so an event seen before the click remains excluded.
+func rcLoadSubmittedTransactions(ctx context.Context, tx *sql.Tx, stage rcPaymentStage) ([]domain.CardTransaction, error) {
+	boundary, err := time.Parse(time.RFC3339Nano, stage.SubmitPermittedAt.String)
+	if !stage.SubmitPermittedAt.Valid || err != nil {
+		return nil, coded("PAYMENT_STAGE_EVIDENCE_INCOMPLETE", "payment submit boundary is missing or invalid")
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT auth_id,COALESCE(auth_time,''),auth_amount,
+		COALESCE(auth_currency,''),settle_amount,COALESCE(settle_currency,''),type,status,merchant_normalized
+		FROM managed_card_transactions WHERE card_id=? AND first_seen_at>=?
+		ORDER BY auth_id LIMIT 10001`, stage.CardID.String, store.ISO(boundary))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []domain.CardTransaction
+	for rows.Next() {
+		var transaction domain.CardTransaction
+		var authAmount, settleAmount float64
+		if err := rows.Scan(&transaction.AuthID, &transaction.AuthTime, &authAmount, &transaction.AuthCurrency,
+			&settleAmount, &transaction.SettleCurrency, &transaction.Type, &transaction.Status, &transaction.MerchantNormalized); err != nil {
+			return nil, err
+		}
+		authCents, authErr := domain.CentsFromUSD(authAmount)
+		settleCents, settleErr := domain.CentsFromUSD(settleAmount)
+		if authErr != nil || settleErr != nil || authCents < 0 || settleCents < 0 || len(result) >= 10_000 {
+			return nil, coded("CARD_TRANSACTION_LIST_INVALID", "stored payment transaction evidence is invalid")
+		}
+		transaction.AuthAmountCents, transaction.SettleAmountCents = &authCents, &settleCents
+		result = append(result, transaction)
+	}
+	return result, rows.Err()
 }
 
 func rcSafeID(value string) bool {
@@ -904,7 +952,7 @@ func (p *Processor) rcEnsureIntervention(ctx context.Context, fulfillment Fulfil
 }
 
 func (p *Processor) rcRecordDueNoPaymentChecks(ctx context.Context, tx *sql.Tx, fulfillmentID, key string,
-	submitAt sql.NullString, beforeAuthIDs []string, transactions []provider.Transaction,
+	submitAt sql.NullString, beforeAuthIDs []string, transactions []domain.CardTransaction,
 	observation *domain.MembershipObservation, now time.Time,
 ) error {
 	if !submitAt.Valid {
@@ -1096,7 +1144,15 @@ func (p *Processor) rcApplyRenewalObservation(ctx context.Context, fulfillmentID
 }
 
 func (p *Processor) rcRefreshSettlement(ctx context.Context, fulfillment Fulfillment, now time.Time) error {
-	rows, err := p.store.DB().QueryContext(ctx, `SELECT stage.stage_key,stage.card_id,card.provider_key,card.upstream_card_id
+	providerColumn := "'spacexcard'"
+	hasProvider, err := tableHasColumn(ctx, p.store.DB(), "managed_cards", "provider_key")
+	if err != nil {
+		return err
+	}
+	if hasProvider {
+		providerColumn = "card.provider_key"
+	}
+	rows, err := p.store.DB().QueryContext(ctx, `SELECT stage.stage_key,stage.card_id,`+providerColumn+`,card.upstream_card_id
     FROM membership_payment_stages stage
     LEFT JOIN managed_cards card ON card.id=stage.card_id
     WHERE stage.fulfillment_id=? AND stage.settlement_state='PENDING'
@@ -1161,24 +1217,48 @@ func (p *Processor) rcApplySettlementEvidence(ctx context.Context, fulfillmentID
 		if _, err := p.rcPersistManagedTransactions(ctx, tx, stage.CardID.String, events, now); err != nil {
 			return err
 		}
-		var status string
+		transaction := domain.CardTransaction{AuthID: stage.MatchedAuthID.String}
+		var authAmount, settleAmount float64
 		var refundSeen, reversalSeen int
-		err = tx.QueryRowContext(ctx, `SELECT status,refund_seen,reversal_seen
+		err = tx.QueryRowContext(ctx, `SELECT type,status,auth_amount,COALESCE(auth_currency,''),
+      settle_amount,COALESCE(settle_currency,''),merchant_normalized,refund_seen,reversal_seen
       FROM managed_card_transactions WHERE card_id=? AND auth_id=?`,
-			stage.CardID.String, stage.MatchedAuthID.String).Scan(&status, &refundSeen, &reversalSeen)
+			stage.CardID.String, stage.MatchedAuthID.String).Scan(&transaction.Type, &transaction.Status,
+			&authAmount, &transaction.AuthCurrency, &settleAmount, &transaction.SettleCurrency,
+			&transaction.MerchantNormalized, &refundSeen, &reversalSeen)
 		if errors.Is(err, sql.ErrNoRows) {
 			return coded("PAYMENT_MATCH_MISSING", "matched transaction is missing")
 		}
 		if err != nil {
 			return err
 		}
-		if status == domain.TransactionStatusComplete && refundSeen == 0 && reversalSeen == 0 {
-			_, err = tx.ExecContext(ctx, `UPDATE membership_payment_stages
+		if refundSeen == 0 && reversalSeen == 0 {
+			authCents, authErr := domain.CentsFromUSD(authAmount)
+			settleCents, settleErr := domain.CentsFromUSD(settleAmount)
+			minCents, minErr := domain.CentsFromUSD(stage.PriceMin.Float64)
+			maxCents, maxErr := domain.CentsFromUSD(stage.PriceMax.Float64)
+			if authErr != nil || settleErr != nil || minErr != nil || maxErr != nil ||
+				!stage.PriceMin.Valid || !stage.PriceMax.Valid {
+				return coded("PAYMENT_STAGE_EVIDENCE_INCOMPLETE", "settlement amount evidence is invalid")
+			}
+			transaction.AuthAmountCents, transaction.SettleAmountCents = &authCents, &settleCents
+			matched, err := domain.MatchPaymentTransactionDelta(domain.PaymentDeltaOptions{
+				ExpectedCurrency: "USD", Tier: domain.Tier(stage.ExpectedTier), MinCents: minCents,
+				MaxCents: maxCents, Transactions: []domain.CardTransaction{transaction},
+			})
+			if err != nil {
+				return codedWrap("PAYMENT_STAGE_EVIDENCE_INCOMPLETE", "match settlement transaction", err)
+			}
+			if matched.Outcome == domain.PaymentOutcomeMatched {
+				if transaction.Type == domain.TransactionTypeSettlement && transaction.Status == domain.TransactionStatusComplete {
+					_, err = tx.ExecContext(ctx, `UPDATE membership_payment_stages
         SET settlement_state='COMPLETE',updated_at=? WHERE id=?`, store.ISO(now), stage.ID)
-			return err
-		}
-		if status == domain.TransactionStatusPending && refundSeen == 0 && reversalSeen == 0 {
-			return nil
+					return err
+				}
+				// A completed authorization still needs a settlement event. Do
+				// not stop polling solely because its authorization is COMPLETE.
+				return nil
+			}
 		}
 		current, err := loadFulfillment(ctx, tx, fulfillmentID)
 		if err != nil {

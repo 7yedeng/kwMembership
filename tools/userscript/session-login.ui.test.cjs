@@ -33,15 +33,32 @@ function harness(options = {}) {
       this.hidden = false;
       this.disabled = false;
       this.parentNode = null;
+      this.ownerDocument = null;
+      this.isConnected = false;
       this.classList = {
         add: value => { this.className = [...new Set([...this.className.split(' ').filter(Boolean), value])].join(' '); },
         remove: value => { this.className = this.className.split(' ').filter(item => item !== value).join(' '); },
         contains: value => this.className.split(' ').includes(value)
       };
       nodes.push(this);
+      if (tag === 'iframe') {
+        const frame = this;
+        const childDocument = {
+          body: new Element('body'), activeElement: null,
+          hasFocus: () => document.activeElement === frame,
+          createElement: name => { const node = new Element(name); node.ownerDocument = childDocument; return node; }
+        };
+        childDocument.frame = frame;
+        childDocument.body.ownerDocument = childDocument;
+        this.contentDocument = options.inputFrameFailure ? null : childDocument;
+      }
     }
     append(...items) {
-      for (const item of items) { item.parentNode = this; this.children.push(item); }
+      for (const item of items) {
+        item.parentNode = this; item.isConnected = true;
+        if (this.ownerDocument) item.ownerDocument = this.ownerDocument;
+        this.children.push(item);
+      }
     }
     remove() {
       if (this.parentNode) this.parentNode.children = this.parentNode.children.filter(item => item !== this);
@@ -52,16 +69,25 @@ function harness(options = {}) {
     attachShadow() {
       if (options.shadowFailure) throw new Error('synthetic-initialization-failure');
       this.shadow = new Element('shadow-root');
+      this.shadow.ownerDocument = this.ownerDocument;
       return this.shadow;
     }
-    focus() { this.focused = true; }
+    focus() {
+      this.focused = true;
+      if (this.ownerDocument) {
+        this.ownerDocument.activeElement = this;
+        document.activeElement = this.ownerDocument.frame || this;
+      }
+      if (this.listeners.has('focus')) this.listeners.get('focus')();
+    }
     async click() { if (!this.disabled && this.listeners.has('click')) await this.listeners.get('click')(); }
   }
 
   const document = {
     readyState: options.loading ? 'loading' : 'complete',
     documentElement: new Element('html'),
-    createElement: tag => new Element(tag),
+    activeElement: null,
+    createElement: tag => { const node = new Element(tag); node.ownerDocument = document; return node; },
     getElementById(id) {
       const visit = node => node.id === id ? node : node.children.map(visit).find(Boolean);
       return visit(this.documentElement) || null;
@@ -103,7 +129,7 @@ function harness(options = {}) {
     }
   }
   return {
-    run, context, document, nodes, menus, calls, fireDOMContentLoaded,
+    run, context, document, nodes, menus, calls, fireDOMContentLoaded, windowEvents,
     host: () => document.getElementById(UI_ID),
     find: predicate => nodes.find(predicate),
     assertNoAccountOperations() { assert.deepEqual(calls, { cookie: 0, fetch: 0, navigate: 0 }); }
@@ -117,11 +143,11 @@ test('browser with a global module.exports still mounts and does not expose flow
   h.run();
   await tick();
   assert.ok(h.host());
-  assert.equal(h.host().attributes['data-version'], '0.1.1');
+  assert.equal(h.host().attributes['data-version'], '0.1.2');
   assert.equal(moduleObject.exports, existing);
   assert.ok(h.find(node => node.tagName === 'section').classList.contains('open'));
   assert.equal(h.find(node => node.className === 'start').disabled, false);
-  assert.match(h.find(node => node.attributes.role === 'status').textContent, /界面已运行/);
+  assert.match(h.find(node => node.className === 'status').textContent, /界面已运行/);
   h.assertNoAccountOperations();
 });
 
@@ -131,7 +157,7 @@ test('missing Cookie API shows a visible fixed error and disables recovery witho
   await tick();
   assert.ok(h.host());
   assert.ok(h.find(node => node.tagName === 'section').classList.contains('open'));
-  assert.match(h.find(node => node.attributes.role === 'status').textContent, /GM_UNAVAILABLE/);
+  assert.match(h.find(node => node.className === 'status error').textContent, /GM_UNAVAILABLE/);
   assert.equal(h.find(node => node.className === 'start').disabled, true);
   h.assertNoAccountOperations();
 });
@@ -169,7 +195,7 @@ test('an unavailable crypto runtime leaves a visible diagnostic and no recovery 
   const h = harness({ noCrypto: true });
   h.run();
   await tick();
-  assert.match(h.find(node => node.attributes.role === 'status').textContent, /RUNTIME_UNAVAILABLE/);
+  assert.match(h.find(node => node.className === 'status error').textContent, /RUNTIME_UNAVAILABLE/);
   assert.equal(h.find(node => node.className === 'start').disabled, true);
   h.assertNoAccountOperations();
 });
@@ -192,4 +218,55 @@ test('unmatched origins and nested frames do not mount or touch account state', 
     assert.equal(h.host(), null);
     h.assertNoAccountOperations();
   }
+});
+
+
+test('sensitive input is adopted by the sandboxed child document and explicitly focuses there', async () => {
+  const h = harness();
+  h.run();
+  await tick();
+  const frame = h.find(node => node.tagName === 'iframe');
+  const input = h.find(node => node.tagName === 'textarea');
+  assert.equal(frame.attributes.sandbox, 'allow-same-origin');
+  assert.equal(input.ownerDocument, frame.contentDocument);
+  assert.notEqual(input.ownerDocument, h.document);
+  await h.find(node => node.className === 'focus-control').click();
+  assert.equal(frame.contentDocument.activeElement, input);
+  assert.match(h.find(node => node.className === 'input-focus ready').textContent, /输入焦点已在蓝框内/);
+  h.assertNoAccountOperations();
+});
+
+test('misplaced parent paste is cancelled without reading or rerouting clipboard data', async () => {
+  const h = harness();
+  h.run();
+  await tick();
+  let prevented = false;
+  let stopped = false;
+  const event = {
+    preventDefault() { prevented = true; },
+    stopImmediatePropagation() { stopped = true; },
+    get clipboardData() { throw new Error('clipboard must never be read'); }
+  };
+  h.windowEvents.get('paste')(event);
+  assert.equal(prevented, true);
+  assert.equal(stopped, true);
+  assert.match(h.find(node => node.className === 'input-focus').textContent, /粘贴焦点不在专用输入区/);
+  assert.equal(h.find(node => node.tagName === 'textarea').value, '');
+  await h.find(node => node.className === 'close').click();
+  prevented = false; stopped = false;
+  h.windowEvents.get('paste')(event);
+  assert.equal(prevented, false);
+  assert.equal(stopped, false);
+  h.assertNoAccountOperations();
+});
+
+test('blocked child document disables recovery and never falls back to a parent textarea', async () => {
+  const h = harness({ inputFrameFailure: true });
+  h.run();
+  await tick();
+  h.find(node => node.tagName === 'iframe').listeners.get('error')();
+  assert.equal(h.find(node => node.className === 'start').disabled, true);
+  assert.equal(h.find(node => node.tagName === 'textarea').parentNode, null);
+  assert.match(h.find(node => node.className === 'status error').textContent, /INPUT_FRAME_UNAVAILABLE/);
+  h.assertNoAccountOperations();
 });
