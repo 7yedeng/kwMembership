@@ -31,6 +31,9 @@ type Processor struct {
 	// a zero-value Processor literal around a minimal schema; production callers
 	// cannot bypass the lease fence because they enter through New and RunOnce.
 	requireLeaseFence bool
+	// Owned billing must resolve a missing issuer address for the exact card.
+	// Compatibility constructors retain their legacy unscoped billing lookup.
+	requireCardBillingBinding bool
 }
 
 type Result struct {
@@ -99,6 +102,7 @@ func NewWithServices(cfg config.Config, repository *store.Store, lease store.Lea
 		return nil, err
 	}
 	p.address = services.Billing
+	p.requireCardBillingBinding = true
 	return p, nil
 }
 

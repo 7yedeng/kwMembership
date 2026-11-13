@@ -13,6 +13,7 @@ class Input {
     this.currentValue = '';
     this.disabled = false;
     this.readOnly = false;
+    this.required = false;
     this.validity = {valid: true};
     this.attributes = {};
     this.onEvent = () => {};
@@ -44,7 +45,7 @@ const postal = input('#billingAddress-postalCodeInput');
 const fragment = {
   // Synthetic payment fixture, never a real account/card/billing profile.
   cardNumber: '4242424242424242', expiry: '1/30', expiryMonth: '1', expiryYear: '2030', cvc: '123',
-  billingName: 'Synthetic Fixture', billingLine1: '1 Test Street', billingCity: 'Test City',
+  billingName: 'Synthetic Fixture', billingLine1: '1 Test Street', billingLine2: '', billingCity: 'Test City',
   billingState: 'Test State', billingCountry: 'PH', billingPostal: '00000',
 };
 let origin = 'https://pay.openai.com';
@@ -62,6 +63,10 @@ switch (scenario) {
     select('#payment-expiryMonthInput', ['01', '02']);
     select('#payment-expiryYearInput', ['29', '30']);
     break;
+  case 'actual-billing-country':
+    select('#billingAddress-countryInput', ['GB', 'US']);
+    fragment.billingCountry = 'GB';
+    break;
   case 'unsupported-select':
     select('#billingAddress-countryInput', ['US']);
     break;
@@ -78,8 +83,36 @@ switch (scenario) {
     input('#billingAddress-stateInput').attributes['aria-invalid'] = 'true';
     break;
   case 'optional-missing-material':
-    input('#billingAddress-stateInput');
+    input('#billingAddress-stateInput').required = true;
     fragment.billingState = '';
+    break;
+  case 'line2-accepted':
+    input('#billingAddress-line2Input');
+    fragment.billingLine2 = 'Suite 2';
+    break;
+  case 'line2-truncated': {
+    const line2 = input('#billingAddress-line2Input');
+    line2.onEvent = event => { if (event.type === 'input') line2.currentValue = line2.currentValue.slice(0, 3); };
+    fragment.billingLine2 = 'Suite 2';
+    break;
+  }
+  case 'optional-empty-material':
+    input('#billingAddress-stateInput').currentValue = 'Unverified default';
+    fragment.billingState = '';
+    fragment.billingPostal = '';
+    break;
+  case 'required-empty-postal':
+    postal.required = true;
+    fragment.billingPostal = '';
+    break;
+  case 'aria-required-empty-state':
+    input('#billingAddress-stateInput').attributes['aria-required'] = 'true';
+    fragment.billingState = '';
+    break;
+  case 'new-required-after-render':
+    elements.delete('#billingAddress-postalCodeInput');
+    delete fragment.billingPostal;
+    onRender = () => { if (renderTicks === 1) input('#billingAddress-postalCodeInput').required = true; };
     break;
   case 'foreign-origin':
     origin = 'https://foreign.example';

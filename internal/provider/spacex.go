@@ -82,6 +82,9 @@ type CardMaterial struct {
 	ExpiryMonth string
 	ExpiryYear  string
 	Status      string
+	Holder      Cardholder
+	HolderName  string
+	Billing     *BillingAddress
 }
 
 type OpenCardInput struct {
@@ -358,10 +361,21 @@ func (c *SpaceXClient) GetCardMaterial(ctx context.Context, cardID int64, now ti
 		return CardMaterial{}, fail("CHECKOUT_MATERIAL_INVALID", "card id is invalid", false)
 	}
 	var raw struct {
-		CardNumber string `json:"card_number"`
-		CVV        string `json:"cvv"`
-		Expire     string `json:"expire"`
-		Status     string `json:"status"`
+		CardNumber  string `json:"card_number"`
+		CVV         string `json:"cvv"`
+		Expire      string `json:"expire"`
+		Status      string `json:"status"`
+		UserName    string `json:"user_name"`
+		FirstName   string `json:"first_name"`
+		LastName    string `json:"last_name"`
+		CardAddress *struct {
+			Line1      string `json:"address_line_one"`
+			Line2      string `json:"address_line_two"`
+			City       string `json:"city"`
+			State      string `json:"state"`
+			Country    string `json:"country"`
+			PostalCode string `json:"post_code"`
+		} `json:"card_address"`
 	}
 	if err := c.request(ctx, http.MethodGet, fmt.Sprintf("/cards/%d", cardID), nil, "", &raw); err != nil {
 		return CardMaterial{}, err
@@ -381,7 +395,30 @@ func (c *SpaceXClient) GetCardMaterial(ctx context.Context, cardID int64, now ti
 	if !time.Date(yearNumber, time.Month(month)+1, 1, 0, 0, 0, 0, time.UTC).After(now.UTC()) {
 		return CardMaterial{}, fail("CHECKOUT_CARD_EXPIRED", "SpaceX Card is expired", false)
 	}
-	return CardMaterial{Number: number, CVV: cvv, ExpiryMonth: expire[0], ExpiryYear: year, Status: status}, nil
+	material := CardMaterial{
+		Number: number, CVV: cvv, ExpiryMonth: expire[0], ExpiryYear: year, Status: status,
+		Holder: Cardholder{FirstName: raw.FirstName, LastName: raw.LastName}, HolderName: raw.UserName,
+	}
+	if material.HolderName == "" {
+		var parts []string
+		for _, part := range []string{raw.FirstName, raw.LastName} {
+			if part != "" {
+				parts = append(parts, part)
+			}
+		}
+		material.HolderName = strings.Join(parts, " ")
+	}
+	// Keep only facts returned for this card, including partial addresses. Do not
+	// trim or repair them here: the billing validator must still see controls or
+	// malformed values, and an absent address must not become a generated one.
+	if address := raw.CardAddress; address != nil && (address.Line1 != "" || address.Line2 != "" ||
+		address.City != "" || address.State != "" || address.Country != "" || address.PostalCode != "") {
+		material.Billing = &BillingAddress{
+			Name: material.HolderName, Line1: address.Line1, Line2: address.Line2,
+			City: address.City, State: address.State, Country: address.Country, PostalCode: address.PostalCode,
+		}
+	}
+	return material, nil
 }
 
 func luhn(value string) bool {

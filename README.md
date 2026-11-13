@@ -1,6 +1,6 @@
 # kwMembership
 
-> **7yedeng 自有付款引擎研究分支（2026-11-13）**：本分支增加账号/账单服务注入、卡台地址配置和支付执行边界修复。请先阅读 [自有引擎实现与验收](docs/INDEPENDENT_ENGINE.md)、[源码依赖清单](docs/DEPENDENCY_INVENTORY.md) 和 [验证记录](docs/VALIDATION.md)。当前默认 worker 仍采用下文的 kwRedeem 配套方式；本分支尚不构成脱离配套系统即可实际付款的成品。
+> **7yedeng 自有付款引擎研究分支（2026-11-13）**：本分支增加独立无付款预检 CLI、按卡绑定的账单资料、账号服务注入和支付执行修复。请先阅读 [自有引擎实现与验收](docs/INDEPENDENT_ENGINE.md)、[独立预检与数据库契约](docs/STANDALONE_CONTRACT.md)、[账号与浏览器测试顺序](docs/ACCOUNT_BROWSER_RUNBOOK.md) 和 [验证记录](docs/VALIDATION.md)。当前默认 worker 仍采用下文的 kwRedeem 配套方式；本分支尚不构成脱离配套系统即可实际付款的成品。
 
 独立的 Go 会员自动化 worker。代码与 kwRedeem 分开维护，但直接读取和写入 kwRedeem 的 SQLite/WAL 数据库，不创建第二套会员数据库。
 
@@ -154,6 +154,6 @@ ssh -L 6080:127.0.0.1:6080 root@服务器地址
 
 ### 实验性免托管密码登录预检
 
-只有经管理员明确选中的单笔履约可以进入 `CHECKOUT_LOGIN_READY`。Go 会打开一个全新的可视化无痕窗口并写入 `CHECKOUT_LOGIN_WAIT`；管理员通过上面的 SSH + noVNC 通道直接登录 ChatGPT，并手动进入 Plus 结账页。账号密码、MFA、Passkey 和浏览器 Cookie 不进入 kwRedeem、kwMembership 或普通日志。
+只有经管理员明确选中的单笔履约可以进入 `CHECKOUT_LOGIN_READY`。Go 会打开使用独立临时 profile 的可视化窗口并写入 `CHECKOUT_LOGIN_WAIT`；管理员通过上面的 SSH + noVNC 通道直接登录 ChatGPT，并手动进入 Plus 结账页。账号密码、MFA、Passkey 和浏览器 Cookie 不进入 kwRedeem、kwMembership 或普通日志。脱离此共享数据库的诊断入口见 [独立预检 CLI](docs/STANDALONE_CONTRACT.md)。
 
 Go 只在浏览器内读取当前登录邮箱并与订单身份进行内存比对，然后执行既有的 Plus / PH / PHP / 价格区间和结账结构预检。成功后停在 `CHECKOUT_LOGIN_PREFLIGHT_PASSED`，不会进入 `FUNDING_READY`，不会读取卡资料、准备资金或授权支付。窗口关闭后登录上下文即销毁；该实验结果不能用于生产付款或 Canary 资格。

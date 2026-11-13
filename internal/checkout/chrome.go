@@ -34,10 +34,43 @@ type ChromeExecutor struct {
 	visible          bool
 	timeout          time.Duration
 	challengeTimeout time.Duration
+	logging          *ChromeLogging
+}
+
+// ChromeLogging controls browser protocol diagnostics for one executor. A nil
+// callback in this explicit policy discards that channel rather than falling
+// back to chromedp's process-wide logger. Existing callers retain their policy.
+type ChromeLogging struct {
+	Logf   func(string, ...any)
+	Errorf func(string, ...any)
+	Debugf func(string, ...any)
 }
 
 func NewChromeExecutor(path, proxyServer string, visible bool, timeout, challengeTimeout time.Duration) *ChromeExecutor {
 	return &ChromeExecutor{path: path, proxyServer: proxyServer, visible: visible, timeout: timeout, challengeTimeout: challengeTimeout}
+}
+
+func NewChromeExecutorWithLogging(path, proxyServer string, visible bool, timeout, challengeTimeout time.Duration, logging ChromeLogging) *ChromeExecutor {
+	executor := NewChromeExecutor(path, proxyServer, visible, timeout, challengeTimeout)
+	executor.logging = &logging
+	return executor
+}
+
+func (c *ChromeExecutor) newBrowserContext(parent context.Context) (context.Context, context.CancelFunc) {
+	if c.logging == nil {
+		return chromedp.NewContext(parent)
+	}
+	callback := func(fn func(string, ...any)) func(string, ...any) {
+		if fn != nil {
+			return fn
+		}
+		return func(string, ...any) {}
+	}
+	return chromedp.NewContext(parent,
+		chromedp.WithLogf(callback(c.logging.Logf)),
+		chromedp.WithErrorf(callback(c.logging.Errorf)),
+		chromedp.WithDebugf(callback(c.logging.Debugf)),
+	)
 }
 
 func chromeOptions(path, proxyServer string, visible bool) []chromedp.ExecAllocatorOption {
@@ -120,6 +153,7 @@ type inspectedPage struct {
 type fillResult struct {
 	Accepted bool     `json:"accepted"`
 	Filled   []string `json:"filled"`
+	Rejected []string `json:"rejected"`
 }
 
 type authenticatedIdentity struct {
@@ -152,7 +186,7 @@ func (c *ChromeExecutor) Execute(parent context.Context, request Request) (Resul
 	defer cancel()
 	allocator, cancelAllocator := chromedp.NewExecAllocator(ctx, chromeOptions(c.path, c.proxyServer, c.visible)...)
 	defer cancelAllocator()
-	browser, cancelBrowser := chromedp.NewContext(allocator)
+	browser, cancelBrowser := c.newBrowserContext(allocator)
 	defer cancelBrowser()
 	if err := chromedp.Run(browser,
 		network.Enable(),
@@ -247,10 +281,14 @@ func validateRequest(request Request) error {
 		material := request.Material
 		if len(material.Card.Number) < 12 || len(material.Card.Number) > 19 || !decimal(material.Card.Number) || !luhnValid(material.Card.Number) ||
 			(len(material.Card.CVV) != 3 && len(material.Card.CVV) != 4) || !decimal(material.Card.CVV) ||
-			len(material.Card.ExpiryMonth) != 2 || !decimal(material.Card.ExpiryMonth) || len(material.Card.ExpiryYear) != 4 || !decimal(material.Card.ExpiryYear) ||
-			material.Billing.Name == "" || material.Billing.Line1 == "" || material.Billing.City == "" ||
-			material.Billing.State != "DE" || material.Billing.Country != "US" || material.Billing.PostalCode == "" {
+			len(material.Card.ExpiryMonth) != 2 || !decimal(material.Card.ExpiryMonth) || len(material.Card.ExpiryYear) != 4 || !decimal(material.Card.ExpiryYear) {
 			return failure("CHECKOUT_MATERIAL_INVALID", "checkout material is invalid")
+		}
+		if err := provider.ValidateBillingAddress(provider.BillingAddress{
+			Name: material.Billing.Name, Line1: material.Billing.Line1, Line2: material.Billing.Line2,
+			City: material.Billing.City, State: material.Billing.State, PostalCode: material.Billing.PostalCode, Country: material.Billing.Country,
+		}); err != nil {
+			return failure("CHECKOUT_MATERIAL_INVALID", "checkout billing material is invalid")
 		}
 	}
 	if len(request.Cookies) == 0 {
@@ -688,36 +726,71 @@ func (c *ChromeExecutor) beforeAndActivate(ctx context.Context, request Request,
 }
 
 func (c *ChromeExecutor) fillMaterial(ctx context.Context, page inspectedPage, material Material) error {
-	values := map[string]string{
-		"cardNumber": material.Card.Number, "expiry": material.Card.ExpiryMonth + "/" + material.Card.ExpiryYear[len(material.Card.ExpiryYear)-2:],
-		"expiryMonth": material.Card.ExpiryMonth, "expiryYear": material.Card.ExpiryYear, "cvc": material.Card.CVV,
-		"billingName": material.Billing.Name, "billingLine1": material.Billing.Line1, "billingCity": material.Billing.City,
-		"billingState": material.Billing.State, "billingCountry": material.Billing.Country, "billingPostal": material.Billing.PostalCode,
-	}
+	values := checkoutFillValues(material)
 	filled := map[string]bool{}
 	for _, frame := range page.fieldFrames {
 		fragment := map[string]string{}
 		for key, present := range frame.Fields {
-			if present {
-				fragment[key] = values[key]
+			if value, known := values[key]; present && known {
+				fragment[key] = value
 			}
 		}
 		if len(fragment) == 0 {
 			continue
 		}
+		if frame.Fields["expiry"] {
+			// Preserve the full year as a comparison hint for formatted MM/YYYY.
+			fragment["expiryYear"] = material.Card.ExpiryYear
+		}
 		payload, _ := json.Marshal(fragment)
 		var result fillResult
 		if err := evaluateFrame(ctx, frame.FrameID, fillFrameFunction+"("+string(payload)+")", &result, false); err != nil {
-			return failure("PAYMENT_FIELDS_NOT_FILLED", "fill checkout fields", err)
+			// Script exceptions can contain field values. Keep only a safe code.
+			return failure("PAYMENT_FIELDS_NOT_FILLED", "fill checkout fields")
 		}
-		for _, key := range result.Filled {
-			filled[key] = true
+		if err := collectFilledFields(result, fragment, filled); err != nil {
+			return err
 		}
 	}
+	return validateFilledMaterial(material, filled)
+}
+
+func checkoutFillValues(material Material) map[string]string {
+	year := material.Card.ExpiryYear
+	if len(year) > 2 {
+		year = year[len(year)-2:]
+	}
+	return map[string]string{
+		"cardNumber": material.Card.Number, "expiry": material.Card.ExpiryMonth + "/" + year,
+		"expiryMonth": material.Card.ExpiryMonth, "expiryYear": material.Card.ExpiryYear, "cvc": material.Card.CVV,
+		"billingName": material.Billing.Name, "billingLine1": material.Billing.Line1, "billingLine2": material.Billing.Line2,
+		"billingCity": material.Billing.City, "billingState": material.Billing.State,
+		"billingCountry": material.Billing.Country, "billingPostal": material.Billing.PostalCode,
+	}
+}
+
+func collectFilledFields(result fillResult, fragment map[string]string, filled map[string]bool) error {
+	if !result.Accepted || result.Filled == nil || result.Rejected == nil || len(result.Rejected) != 0 {
+		return failure("PAYMENT_FIELDS_NOT_FILLED", "checkout did not accept all supplied fields")
+	}
+	for _, key := range result.Filled {
+		value, known := fragment[key]
+		if !known || strings.TrimSpace(value) == "" {
+			return failure("PAYMENT_FIELDS_NOT_FILLED", "checkout returned an invalid filled-field report")
+		}
+		filled[key] = true
+	}
+	return nil
+}
+
+func validateFilledMaterial(material Material, filled map[string]bool) error {
 	cardComplete := filled["cardNumber"] && filled["cvc"] && (filled["expiry"] || filled["expiryMonth"] && filled["expiryYear"])
-	billingComplete := filled["billingName"] && filled["billingCountry"] && filled["billingPostal"]
+	billingComplete := filled["billingName"] && filled["billingCountry"]
 	if !cardComplete || !billingComplete {
 		return failure("PAYMENT_FIELDS_NOT_FILLED", "required checkout fields were not filled")
+	}
+	if strings.TrimSpace(material.Billing.Line2) != "" && !filled["billingLine2"] {
+		return failure("PAYMENT_FIELDS_NOT_FILLED", "billing address line 2 was not accepted")
 	}
 	return nil
 }
@@ -916,9 +989,9 @@ func classify(page inspectedPage, request Request, purpose string) string {
 		return "PAYMENT_ACTION_REQUIRED"
 	}
 	cardFields := page.Fields["cardNumber"] && page.Fields["cvc"] && (page.Fields["expiry"] || page.Fields["expiryMonth"] && page.Fields["expiryYear"])
-	billingCore := page.Fields["billingName"] && page.Fields["billingCountry"] && page.Fields["billingPostal"]
-	addressCount := boolCount(page.Fields["billingLine1"], page.Fields["billingCity"], page.Fields["billingState"])
-	if !cardFields || !billingCore || addressCount != 0 && addressCount != 3 || (page.Controls["progression"] == "") == (page.Controls["submit"] == "") {
+	billingCore := page.Fields["billingName"] && page.Fields["billingCountry"]
+	addressCount := boolCount(page.Fields["billingLine1"], page.Fields["billingCity"])
+	if !cardFields || !billingCore || addressCount != 0 && addressCount != 2 || (page.Controls["progression"] == "") == (page.Controls["submit"] == "") {
 		return "UNKNOWN_PAYMENT_STATE"
 	}
 	if page.Controls["progression"] != "" {

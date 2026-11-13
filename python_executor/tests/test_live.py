@@ -58,6 +58,28 @@ class LiveContractTest(unittest.TestCase):
         foreign.evaluate.assert_not_called()
         allowed.evaluate.assert_called_once()
 
+    def test_line2_is_forwarded_and_nonempty_line2_cannot_be_dropped(self) -> None:
+        for key in ("Line2", "line2"):
+            with self.subTest(key=key):
+                allowed = mock.Mock(url="https://pay.openai.com/pay/test")
+                allowed.evaluate.return_value = self._filled_result()
+                material = {"billing": {key: "Synthetic suite 2"}}
+                with self.assertRaises(ExecutorAPIError) as raised:
+                    _fill_frames(mock.Mock(frames=[allowed]), material)
+                self.assertEqual(raised.exception.code, "PAYMENT_FIELDS_NOT_FILLED")
+                self.assertEqual(allowed.evaluate.call_args.args[1]["billingLine2"], "Synthetic suite 2")
+                result = self._filled_result()
+                result["filled"].append("billingLine2")
+                allowed.evaluate.return_value = result
+                _fill_frames(mock.Mock(frames=[allowed]), material)
+
+    def test_postal_and_state_are_not_unconditionally_required_by_aggregation(self) -> None:
+        allowed = mock.Mock(url="https://pay.openai.com/pay/test")
+        result = self._filled_result()
+        result["filled"].remove("billingPostal")
+        allowed.evaluate.return_value = result
+        _fill_frames(mock.Mock(frames=[allowed]), {})
+
     def test_present_rejected_optional_field_stops_checkout_before_any_action(self) -> None:
         frame = mock.Mock(url="https://pay.openai.com/pay/test")
         frame.evaluate.return_value = self._filled_result(rejected=["billingState"])
@@ -161,6 +183,10 @@ class LiveContractTest(unittest.TestCase):
             "controls": {"submit": "payment-submit"},
         }
         self.assertEqual(_classify(plus, lease(), "checkout"), "PAYMENT_FINAL_READY")
+        without_state_or_postal = {**plus, "fields": {**fields, "billingLine1": True, "billingCity": True}}
+        without_state_or_postal["fields"].pop("billingPostal")
+        self.assertEqual(_classify(without_state_or_postal, lease(), "checkout"), "PAYMENT_FINAL_READY")
+        self.assertEqual(_classify({**without_state_or_postal, "country": "GB"}, lease(), "checkout"), "UNKNOWN_PAYMENT_STATE")
 
         selection = {
             "origin": "https://chatgpt.com",

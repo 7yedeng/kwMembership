@@ -79,6 +79,7 @@ INSPECT_FRAME_JS = r"""
       cvc: has(['#payment-cvcInput', 'input[name="cvc"]', 'input[autocomplete="cc-csc"]']),
       billingName: has(['#billingAddress-nameInput', 'input[name="name"]', 'input[autocomplete="billing name"]']),
       billingLine1: has(['#billingAddress-line1Input', 'input[name="addressLine1"]', 'input[autocomplete="billing address-line1"]']),
+      billingLine2: has(['#billingAddress-line2Input', 'input[name="addressLine2"]', 'input[autocomplete="billing address-line2"]']),
       billingCity: has(['#billingAddress-cityInput', 'input[name="city"]', 'input[autocomplete="billing address-level2"]']),
       billingState: has(['#billingAddress-stateInput', 'select[name="state"]', 'input[autocomplete="billing address-level1"]']),
       billingCountry: has(['#billingAddress-countryInput', 'select[name="country"]', 'select[autocomplete="billing country"]']),
@@ -110,6 +111,7 @@ async (fragment) => {
     cardNumber: ['#payment-numberInput', 'input[name="number"]', 'input[autocomplete="cc-number"]'], expiry: ['#payment-expiryInput', 'input[name="expiry"]', 'input[autocomplete="cc-exp"]'],
     expiryMonth: ['#payment-expiryMonthInput', 'select[name="exp-month"]'], expiryYear: ['#payment-expiryYearInput', 'select[name="exp-year"]'], cvc: ['#payment-cvcInput', 'input[name="cvc"]', 'input[autocomplete="cc-csc"]'],
     billingName: ['#billingAddress-nameInput', 'input[name="name"]', 'input[autocomplete="billing name"]'], billingLine1: ['#billingAddress-line1Input', 'input[name="addressLine1"]', 'input[autocomplete="billing address-line1"]'],
+    billingLine2: ['#billingAddress-line2Input', 'input[name="addressLine2"]', 'input[autocomplete="billing address-line2"]'],
     billingCity: ['#billingAddress-cityInput', 'input[name="city"]', 'input[autocomplete="billing address-level2"]'], billingState: ['#billingAddress-stateInput', 'select[name="state"]', 'input[autocomplete="billing address-level1"]'],
     billingCountry: ['#billingAddress-countryInput', 'select[name="country"]', 'select[autocomplete="billing country"]'], billingPostal: ['#billingAddress-postalCodeInput', 'input[name="postalCode"]', 'input[autocomplete="billing postal-code"]']
   };
@@ -139,14 +141,18 @@ async (fragment) => {
     !element.disabled && !element.readOnly;
   const invalid = element => element.validity?.valid === false ||
     Boolean(element.getAttribute('aria-invalid') && element.getAttribute('aria-invalid').toLowerCase() !== 'false');
+  const optionalBilling = new Set(['billingLine2', 'billingState', 'billingPostal']);
+  const emptyPermitted = (key, element) => optionalBilling.has(key) && element.required !== true &&
+    element.getAttribute('aria-required')?.trim().toLowerCase() !== 'true';
   const present = new Set(), failed = new Set();
-  for (const [key, value] of Object.entries(fragment || {})) {
+  for (const key of Object.keys(selectors)) {
+    const value = fragment?.[key];
     const element = find(key); if (!element) continue;
     present.add(key);
-    if (typeof value !== 'string' || !value.trim() || !editable(element)) { failed.add(key); continue; }
+    if (typeof value !== 'string' || (!value.trim() && !emptyPermitted(key, element)) || !editable(element)) { failed.add(key); continue; }
     try {
       let candidate = value;
-      if (element instanceof HTMLSelectElement) {
+      if (element instanceof HTMLSelectElement && value.trim()) {
         const options = [...element.options].filter(option => !option.disabled && matches(key, option.value, value));
         const exact = options.find(option => option.value === value);
         if (!exact && options.length !== 1) { failed.add(key); continue; }
@@ -170,11 +176,14 @@ async (fragment) => {
   });
   if (!rendered || !allowed.includes(location.origin)) return refused();
   const filled = [], rejected = [];
-  for (const [key, value] of Object.entries(fragment || {})) {
+  for (const key of Object.keys(selectors)) {
+    const value = fragment?.[key];
     const element = find(key);
     if (!element && !present.has(key)) continue;
-    if (!element || failed.has(key) || !editable(element) || invalid(element) || !matches(key, element.value, value)) rejected.push(key);
-    else filled.push(key);
+    const acceptedEmpty = element && typeof value === 'string' && !value.trim() && emptyPermitted(key, element) &&
+      typeof element.value === 'string' && !element.value.trim();
+    if (!element || failed.has(key) || !editable(element) || invalid(element) || (!acceptedEmpty && !matches(key, element.value, value))) rejected.push(key);
+    else if (!acceptedEmpty) filled.push(key);
   }
   // Never return card, security-code or billing values to the Python caller.
   return {accepted:true,filled,rejected};
@@ -592,9 +601,9 @@ def _classify(page: dict[str, Any], lease: ExecutorLease, purpose: str) -> str:
     if page.get("controls", {}).get("challenge"): return "PAYMENT_ACTION_REQUIRED"
     fields = page.get("fields", {}); controls = page.get("controls", {})
     card = fields.get("cardNumber") and fields.get("cvc") and (fields.get("expiry") or fields.get("expiryMonth") and fields.get("expiryYear"))
-    billing = fields.get("billingName") and fields.get("billingCountry") and fields.get("billingPostal")
-    address = sum(bool(fields.get(key)) for key in ("billingLine1", "billingCity", "billingState"))
-    if not card or not billing or address not in {0, 3} or (bool(controls.get("progression")) == bool(controls.get("submit"))): return "UNKNOWN_PAYMENT_STATE"
+    billing = fields.get("billingName") and fields.get("billingCountry")
+    address = sum(bool(fields.get(key)) for key in ("billingLine1", "billingCity"))
+    if not card or not billing or address not in {0, 2} or (bool(controls.get("progression")) == bool(controls.get("submit"))): return "UNKNOWN_PAYMENT_STATE"
     return "PAYMENT_PROGRESSION_READY" if controls.get("progression") else "PAYMENT_FINAL_READY"
 
 
@@ -629,7 +638,7 @@ def _allowed_fill_origin(value: Any) -> bool:
 def _fill_frames(page: Any, material: dict[str, Any]) -> None:
     card = material.get("card", {}); billing = material.get("billing", {})
     year = str(card.get("ExpiryYear", card.get("expiryYear", "")))
-    fragment = {"cardNumber": str(card.get("Number", card.get("number", ""))), "expiry": str(card.get("ExpiryMonth", card.get("expiryMonth", ""))) + "/" + year[-2:], "expiryMonth": str(card.get("ExpiryMonth", card.get("expiryMonth", ""))), "expiryYear": year, "cvc": str(card.get("CVV", card.get("cvv", ""))), "billingName": str(billing.get("Name", billing.get("name", ""))), "billingLine1": str(billing.get("Line1", billing.get("line1", ""))), "billingCity": str(billing.get("City", billing.get("city", ""))), "billingState": str(billing.get("State", billing.get("state", ""))), "billingCountry": str(billing.get("Country", billing.get("country", ""))), "billingPostal": str(billing.get("PostalCode", billing.get("postalCode", "")))}
+    fragment = {"cardNumber": str(card.get("Number", card.get("number", ""))), "expiry": str(card.get("ExpiryMonth", card.get("expiryMonth", ""))) + "/" + year[-2:], "expiryMonth": str(card.get("ExpiryMonth", card.get("expiryMonth", ""))), "expiryYear": year, "cvc": str(card.get("CVV", card.get("cvv", ""))), "billingName": str(billing.get("Name", billing.get("name", ""))), "billingLine1": str(billing.get("Line1", billing.get("line1", ""))), "billingLine2": str(billing.get("Line2", billing.get("line2", ""))), "billingCity": str(billing.get("City", billing.get("city", ""))), "billingState": str(billing.get("State", billing.get("state", ""))), "billingCountry": str(billing.get("Country", billing.get("country", ""))), "billingPostal": str(billing.get("PostalCode", billing.get("postalCode", "")))}
     filled: set[str] = set()
     for frame in page.frames:
         if not _allowed_fill_origin(frame.url):
@@ -653,7 +662,9 @@ def _fill_frames(page: Any, material: dict[str, Any]) -> None:
         ):
             raise ExecutorAPIError("PAYMENT_FIELDS_NOT_FILLED", 409)
         filled.update(accepted_fields)
-    if not ("cardNumber" in filled and "cvc" in filled and ("expiry" in filled or {"expiryMonth", "expiryYear"} <= filled) and "billingName" in filled and "billingCountry" in filled and "billingPostal" in filled):
+    if not ("cardNumber" in filled and "cvc" in filled and ("expiry" in filled or {"expiryMonth", "expiryYear"} <= filled) and "billingName" in filled and "billingCountry" in filled):
+        raise ExecutorAPIError("PAYMENT_FIELDS_NOT_FILLED", 409)
+    if fragment["billingLine2"].strip() and "billingLine2" not in filled:
         raise ExecutorAPIError("PAYMENT_FIELDS_NOT_FILLED", 409)
 
 

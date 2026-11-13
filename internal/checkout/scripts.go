@@ -160,6 +160,7 @@ const inspectFrameJS = `(() => {
       cvc: has(['#payment-cvcInput', 'input[name="cvc"]', 'input[autocomplete="cc-csc"]']),
       billingName: has(['#billingAddress-nameInput', 'input[name="name"]', 'input[autocomplete="billing name"]']),
       billingLine1: has(['#billingAddress-line1Input', 'input[name="addressLine1"]', 'input[autocomplete="billing address-line1"]']),
+      billingLine2: has(['#billingAddress-line2Input', 'input[name="addressLine2"]', 'input[autocomplete="billing address-line2"]']),
       billingCity: has(['#billingAddress-cityInput', 'input[name="city"]', 'input[autocomplete="billing address-level2"]']),
       billingState: has(['#billingAddress-stateInput', 'select[name="state"]', 'input[autocomplete="billing address-level1"]']),
       billingCountry: has(['#billingAddress-countryInput', 'select[name="country"]', 'select[autocomplete="billing country"]']),
@@ -187,42 +188,90 @@ const inspectFrameJS = `(() => {
   };
 })()`
 
-const fillFrameFunction = `(fragment => {
-  if (!['https://chatgpt.com', 'https://pay.openai.com', 'https://js.stripe.com'].includes(location.origin)) return {accepted:false,filled:[]};
+const fillFrameFunction = `(async (fragment) => {
+  const allowed = ['https://chatgpt.com', 'https://pay.openai.com', 'https://js.stripe.com'];
+  const refused = () => ({accepted:false,filled:[],rejected:[]});
+  if (!allowed.includes(location.origin)) return refused();
   const selectors = {
-    cardNumber: ['#payment-numberInput', 'input[name="number"]', 'input[autocomplete="cc-number"]'],
-    expiry: ['#payment-expiryInput', 'input[name="expiry"]', 'input[autocomplete="cc-exp"]'],
-    expiryMonth: ['#payment-expiryMonthInput', 'select[name="exp-month"]'],
-    expiryYear: ['#payment-expiryYearInput', 'select[name="exp-year"]'],
-    cvc: ['#payment-cvcInput', 'input[name="cvc"]', 'input[autocomplete="cc-csc"]'],
-    billingName: ['#billingAddress-nameInput', 'input[name="name"]', 'input[autocomplete="billing name"]'],
-    billingLine1: ['#billingAddress-line1Input', 'input[name="addressLine1"]', 'input[autocomplete="billing address-line1"]'],
-    billingCity: ['#billingAddress-cityInput', 'input[name="city"]', 'input[autocomplete="billing address-level2"]'],
-    billingState: ['#billingAddress-stateInput', 'select[name="state"]', 'input[autocomplete="billing address-level1"]'],
-    billingCountry: ['#billingAddress-countryInput', 'select[name="country"]', 'select[autocomplete="billing country"]'],
-    billingPostal: ['#billingAddress-postalCodeInput', 'input[name="postalCode"]', 'input[autocomplete="billing postal-code"]']
+    cardNumber: ['#payment-numberInput', 'input[name="number"]', 'input[autocomplete="cc-number"]'], expiry: ['#payment-expiryInput', 'input[name="expiry"]', 'input[autocomplete="cc-exp"]'],
+    expiryMonth: ['#payment-expiryMonthInput', 'select[name="exp-month"]'], expiryYear: ['#payment-expiryYearInput', 'select[name="exp-year"]'], cvc: ['#payment-cvcInput', 'input[name="cvc"]', 'input[autocomplete="cc-csc"]'],
+    billingName: ['#billingAddress-nameInput', 'input[name="name"]', 'input[autocomplete="billing name"]'], billingLine1: ['#billingAddress-line1Input', 'input[name="addressLine1"]', 'input[autocomplete="billing address-line1"]'],
+    billingLine2: ['#billingAddress-line2Input', 'input[name="addressLine2"]', 'input[autocomplete="billing address-line2"]'],
+    billingCity: ['#billingAddress-cityInput', 'input[name="city"]', 'input[autocomplete="billing address-level2"]'], billingState: ['#billingAddress-stateInput', 'select[name="state"]', 'input[autocomplete="billing address-level1"]'],
+    billingCountry: ['#billingAddress-countryInput', 'select[name="country"]', 'select[autocomplete="billing country"]'], billingPostal: ['#billingAddress-postalCodeInput', 'input[name="postalCode"]', 'input[autocomplete="billing postal-code"]']
   };
-  const find = key => {
-    for (const selector of selectors[key] || []) {
-      const element = document.querySelector(selector);
-      if (element) return element;
+  const find = key => (selectors[key] || []).map(selector => document.querySelector(selector)).find(Boolean) || null;
+  const yearMatches = (left, right) => /^\d{2}(?:\d{2})?$/.test(left) && /^\d{2}(?:\d{2})?$/.test(right) &&
+    (left.length === right.length ? left === right : left.slice(-2) === right.slice(-2));
+  const matches = (key, actual, expected) => {
+    if (typeof actual !== 'string' || typeof expected !== 'string' || !expected.trim()) return false;
+    actual = actual.trim(); expected = expected.trim();
+    if (key === 'cardNumber') {
+      const number = value => value.replace(/[\s-]/g, '');
+      return /^\d+$/.test(number(actual)) && number(actual) === number(expected);
     }
-    return null;
+    if (key === 'expiry') {
+      const parse = value => /^(\d{1,2})\s*\/\s*(\d{2}|\d{4})$/.exec(value);
+      const left = parse(actual), right = parse(expected);
+      return Boolean(left && right && Number(left[1]) >= 1 && Number(left[1]) <= 12 &&
+        Number(left[1]) === Number(right[1]) && yearMatches(left[2], fragment.expiryYear || right[2]));
+    }
+    if (key === 'expiryMonth') return /^\d{1,2}$/.test(actual) && /^\d{1,2}$/.test(expected) &&
+      Number(actual) >= 1 && Number(actual) <= 12 && Number(actual) === Number(expected);
+    if (key === 'expiryYear') return yearMatches(actual, expected);
+    if (key === 'billingCountry') return actual.toUpperCase() === expected.toUpperCase();
+    return actual === expected;
   };
-  const filled = [];
-  for (const [key, value] of Object.entries(fragment || {})) {
-    if (typeof value !== 'string') continue;
-    const element = find(key);
-    if (!element) continue;
-    const prototype = element instanceof HTMLSelectElement ? HTMLSelectElement.prototype : HTMLInputElement.prototype;
-    const setter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
-    if (setter) setter.call(element, value); else element.value = value;
-    element.dispatchEvent(new Event('input', {bubbles:true}));
-    element.dispatchEvent(new Event('change', {bubbles:true}));
-    element.dispatchEvent(new Event('blur', {bubbles:true}));
-    filled.push(key);
+  const editable = element => (element instanceof HTMLInputElement || element instanceof HTMLSelectElement) &&
+    !element.disabled && !element.readOnly;
+  const invalid = element => element.validity?.valid === false ||
+    Boolean(element.getAttribute('aria-invalid') && element.getAttribute('aria-invalid').toLowerCase() !== 'false');
+  const optionalBilling = new Set(['billingLine2', 'billingState', 'billingPostal']);
+  const emptyPermitted = (key, element) => optionalBilling.has(key) && element.required !== true &&
+    element.getAttribute('aria-required')?.trim().toLowerCase() !== 'true';
+  const present = new Set(), failed = new Set();
+  for (const key of Object.keys(selectors)) {
+    const value = fragment?.[key];
+    const element = find(key); if (!element) continue;
+    present.add(key);
+    if (typeof value !== 'string' || (!value.trim() && !emptyPermitted(key, element)) || !editable(element)) { failed.add(key); continue; }
+    try {
+      let candidate = value;
+      if (element instanceof HTMLSelectElement && value.trim()) {
+        const options = [...element.options].filter(option => !option.disabled && matches(key, option.value, value));
+        const exact = options.find(option => option.value === value);
+        if (!exact && options.length !== 1) { failed.add(key); continue; }
+        candidate = (exact || options[0]).value;
+      }
+      const prototype = element instanceof HTMLSelectElement ? HTMLSelectElement.prototype : HTMLInputElement.prototype;
+      const setter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
+      if (!setter) { failed.add(key); continue; }
+      setter.call(element, candidate);
+      for (const type of ['input', 'change', 'blur']) element.dispatchEvent(new Event(type, {bubbles:true}));
+    } catch { failed.add(key); }
   }
-  return {accepted:true,filled};
+  // Empty utility frames may never render. They supply no filled-field evidence
+  // and need no render wait; frames containing candidates still must verify.
+  if (present.size === 0) return {accepted:true,filled:[],rejected:[]};
+  // Controlled inputs may reset or replace the node on their next render. A
+  // successful setter alone is not evidence that the form accepted the value.
+  const rendered = await new Promise(resolve => {
+    const timer = setTimeout(() => resolve(false), 1500);
+    requestAnimationFrame(() => requestAnimationFrame(() => { clearTimeout(timer); resolve(true); }));
+  });
+  if (!rendered || !allowed.includes(location.origin)) return refused();
+  const filled = [], rejected = [];
+  for (const key of Object.keys(selectors)) {
+    const value = fragment?.[key];
+    const element = find(key);
+    if (!element && !present.has(key)) continue;
+    const acceptedEmpty = element && typeof value === 'string' && !value.trim() && emptyPermitted(key, element) &&
+      typeof element.value === 'string' && !element.value.trim();
+    if (!element || failed.has(key) || !editable(element) || invalid(element) || (!acceptedEmpty && !matches(key, element.value, value))) rejected.push(key);
+    else if (!acceptedEmpty) filled.push(key);
+  }
+  // Never return card, security-code or billing values to the Python caller.
+  return {accepted:true,filled,rejected};
 })`
 
 const activateControlFunction = `(controlId => {

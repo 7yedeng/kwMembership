@@ -1,18 +1,21 @@
 # 本分支验证记录
 
-日期：2026-11-13。验证对象为 `research/independent-executor-20261113` 分支的自有依赖接口与付款执行修复。测试使用合成 Session、合成卡资料、本地 HTTP/TLS 测试服务器和临时 SQLite，不使用真实账户或资金。
+日期：2026-11-13。验证对象为 `research/independent-executor-20261113` 分支的独立预检、按卡账单绑定、自有依赖接口与付款执行修复。测试使用合成 Session、合成卡资料、本地 HTTP/TLS/CDP 测试服务器和临时 SQLite，不使用真实账户或资金。下表记录本地执行结果；GitHub runner 的真实浏览器结论以对应 [Actions run](https://github.com/7yedeng/kwMembership/actions) 为准，不把本地 skip 记作通过。
 
 ## 1. 已执行的验证
 
 | 验证 | 命令 | 结果 |
 | --- | --- | --- |
-| Go 全量测试 | `go test ./...` | 9 个 package 全部通过；使用 Go 1.26.11。 |
-| Python 与填表 JS 离线测试 | `python3 -m unittest discover -s python_executor/tests -v` | 32 项全部通过，0 skip；其中 11 项直接执行生产填表 JS 的 Node DOM 模拟测试。 |
+| Go 全量测试 | `go test -count=1 ./...` | 11 个 package 全部通过；使用 Go 1.26.11。 |
+| Python 与填表 JS 本地测试 | `python3 -m unittest discover -s python_executor/tests -v` | 共 52 项：39 项实际通过，13 项真实浏览器测试明确 skip；默认官方 headless shell 未安装。16 项 Node DOM 模拟测试分别执行 Go/Python 两套生产填表 JS 并比较。 |
+| GitHub 浏览器门禁 | `.github/workflows/offline-validation.yml` | 在独立 runner 安装固定版本 Playwright 的官方浏览器；`KWMEMBERSHIP_REQUIRE_BROWSER_TESTS=1`，缺浏览器和任何 skip 都令 job 失败。此行说明门禁，实际成功/失败见 Actions 日志。 |
 | 补丁空白/冲突标记检查 | `git diff --check` | 通过。 |
 | 研究清单校对 | 对照非测试 Go SQL 引用、预检列表、文档相对链接 | 35 张业务表集合与源码一致；17 项预检标记一致；源码链接有效。 |
 | 相关仓库差异 | 对固定版本的两个 `automation` 目录比较文件集合与 SHA-256 | PPCDK 与 ZovoCard 的该目录均为 12 文件，全部逐字节相同。 |
 
-Go package 范围：`cmd/membership-worker`、`internal/checkout`、`internal/config`、`internal/domain`、`internal/executor`、`internal/processor`、`internal/provider`、`internal/secure`、`internal/store`。
+Go package 范围：`cmd/membership-worker`、`cmd/membership-preflight`、`internal/preflight`、`internal/checkout`、`internal/config`、`internal/domain`、`internal/executor`、`internal/processor`、`internal/provider`、`internal/secure`、`internal/store`。
+
+首批提交的 Python 结果为 32 项通过、0 skip；加入真正的浏览器 suite 后不能继续沿用这个数字。当前本地 `OK (skipped=13)` 不表示真实浏览器测试已通过。
 
 ## 2. 有业务意义的回归场景
 
@@ -22,9 +25,24 @@ Go package 范围：`cmd/membership-worker`、`internal/checkout`、`internal/co
 - 缺失布尔值、未知套餐、缺失付费币种/到期证据、陈旧观察不会被推断成 free；付费档位即使过期也不会自动变成 free。
 - Session 与观察到的邮箱不匹配时进入订单恢复处理，不触发全局会员服务熔断。
 - 取消续费后重新观察，拒绝取消前的缓存；普通查询错误不会把失败的半开探测记为成功。
-- 账单配置缺必填字段或包含控制字符时在执行前报错；返回内容来自同一不可变 profile，错误不包含账单值，取消的 context 不返回资料。
+- 账单配置缺必填字段或包含控制字符时在执行前报错；返回内容来自不可变 profile，错误不包含账单值，取消的 context 不返回资料。
+- 卡详情在同一次 GET 中保留姓名和完整/缺失/部分地址，包括 Line2；只有姓名不会被解释成完整地址。
+- 按平台配置 key 和数字卡 ID 精确取配置，不能跨卡或跨平台借用。完整 issuer 资料优先，缺失项才补齐；已知字段冲突立即停止。
+- checkout 接线测试使用临时 SQLite、内存 HTTP transport 与 executor 替身，验证一次卡详情请求的地址一直进入同一请求的付款 Material，且仍带原动作 Guard。该测试不调用 Guard 或点击控件。
+- 本地 bridge 材料领取集成测试验证 Line2 和 GB 账单国家保留，价格契约仍为 PH/PHP。
 
-代码：[account_service_test.go](../internal/processor/account_service_test.go)、[configured_billing_test.go](../internal/provider/configured_billing_test.go)。
+代码：[account_service_test.go](../internal/processor/account_service_test.go)、[configured_billing_test.go](../internal/provider/configured_billing_test.go)、[card_billing_test.go](../internal/provider/card_billing_test.go)、[card_bound_billing_test.go](../internal/provider/card_bound_billing_test.go)、[processor/card_billing_test.go](../internal/processor/card_billing_test.go)、[material_billing_test.go](../internal/executor/material_billing_test.go)。
+
+### 独立预检入口
+
+- 默认 `--check` 和 `--inspect-session` 不构造浏览器，不加载 worker 配置或数据库；本地通过始终保留 `remoteVerified=false`。
+- 拒绝封装和价格契约的未知字段、尾随 JSON、超大输入、身份不一致；只有 accessToken 时不伪造 session cookie。
+- `--run` 的 fake executor 断言仅使用 `ModeSessionPreflight`，卡材料、Guard、OnHandoff、Binding 均为空；出现 progression 或 submit 报告则失败。
+- `--interactive-preflight` 只接受严格元数据，在 headed 独立 profile 中等待用户直接登录，不接收 Session。离线测试只验证请求和 callback 契约，没有访问真实站点。
+- 所有错误和输出通过白名单；不回显未知 code、邮箱、token、完整 URL 或底层异常。CLI 专用 browser logger 禁用原始 CDP 异步日志；本地模拟 CDP 服务验证异常事件不会旁路泄露。
+- stdin 等待读取支持 context 取消，SIGINT/SIGTERM 不因等待输入 EOF 而挂住。测试使用 pipe 和合成材料。
+
+代码：[main_test.go](../cmd/membership-preflight/main_test.go)、[preflight_test.go](../internal/preflight/preflight_test.go)。完整输入与模式说明：[STANDALONE_CONTRACT.md](STANDALONE_CONTRACT.md)。
 
 ### 卡台连接
 
@@ -46,7 +64,7 @@ Go package 范围：`cmd/membership-worker`、`internal/checkout`、`internal/co
 
 ### 自动填表回读
 
-生产 `FILL_FRAME_JS` 被直接送入 Node VM；DOM 模拟实现输入框、选择框、事件处理器和帧渲染回调，覆盖：
+Python 生产 `FILL_FRAME_JS` 和 Go 生产 `fillFrameFunction` 分别直接送入 Node VM；DOM 模拟实现输入框、选择框、事件处理器和帧渲染回调，并要求两套脚本结果一致，覆盖：
 
 - 卡号空格、有效期格式化与等价的月份/年份选项；
 - 不存在对应选项、输入事件清空值、渲染时替换节点；
@@ -54,12 +72,19 @@ Go package 范围：`cmd/membership-worker`、`internal/checkout`、`internal/co
 - Python 在传入卡资料前排除不允许的 frame origin，JS 再检查当前 origin；
 - 某 frame 的失败不能被另一个 frame 的成功字段集合掩盖；填表失败后不会申请点击；
 - 无候选字段且不运行渲染回调的 frame 返回空字段集合，不阻塞、不提供填写成功证据。
+- 地址第二行接受、截断和缺字段；非空 Line2 不可静默丢弃。
+- 空州/邮编仅在页面字段非 required、非 aria-required 且 native validity 正常时接受，不伪造默认值。
+- 渲染后新增字段重新验证，不因旧 fragment 缺少它而漏过。
 
 测试输出只有字段名与布尔值，不回传卡号、CVC 或账单值。代码：[test_fill_dom.py](../python_executor/tests/test_fill_dom.py)、[fill_dom_double.cjs](../python_executor/tests/fill_dom_double.cjs)。
 
 ## 3. 明确未完成的验证
 
-**真实 Chromium 离线页面测试没有通过环境启动阶段。** 浏览器创建本地 IPC socket 被 sandbox 拒绝；请求扩大执行权限后，自动审批策略又拒绝了 sandbox escalation。于是使用上述离线 DOM 模拟验证 JS 逻辑，没有把它写成真实浏览器测试通过。
+**当前本地完整 Chromium 的离线页面测试没有通过环境启动阶段。** 普通权限下 `socket(AF_UNIX, SOCK_STREAM/DGRAM)` 返回 EPERM，`socketpair` 和 AF_INET 回环 TCP 可用；完整 Chromium 在 ProcessSingleton 创建 Unix socket 时退出。此前扩大执行权限的申请被自动审批拒绝；本轮没有关闭或绕过宿主策略。官方 headless shell 的普通安装下载得到无效 ZIP，尚未取得可启动文件，不能把它写成复现了相同 IPC 故障。
+
+新增 [test_browser_fill.py](../python_executor/tests/test_browser_fill.py) 和 [browser_fill.html](../python_executor/tests/browser_fill.html) 包含 13 个真实浏览器测试方法。所有 HTTP 请求本地 fulfill 或 abort，fixture 响应必须有标记；未知 HTTP 请求必须被中止且不能取得响应。使用新 context、禁止 service worker，并配置关闭的回环代理防止意外外联。这些是合成 DOM 的真实浏览器测试，不是登录或支付网站实测。
+
+CI 启动与依赖缺失必须失败；本地允许 skip 时会打印具体安装/IPC原因。已通过模拟缺失浏览器的强制门禁检查，证明 required 模式不会以 skip 获得成功。CI 不读取真实账号、卡或 repo secrets，也不上传浏览器 profile、Session、HAR 或页面截图。
 
 Node DOM 模拟不能证明 Chromium/React/Stripe 的真实行为，也不能证明现有 selector、`data-kw-*` 或 meta 标记存在于当前线上页面。没有向真实页面注入自定义标记来制造契约成功。
 
@@ -75,6 +100,16 @@ python3 -m unittest discover -s python_executor/tests -v
 git diff --check
 ```
 
-Python DOM 模拟测试在没有 Node.js 时会明确 skip；本轮运行环境有 Node.js，因此这 11 项均实际执行、没有 skip。Node.js 仅用于这些测试，没有增加到付款执行器的生产依赖。
+Python DOM 模拟测试在没有 Node.js 时会明确 skip；本轮运行环境有 Node.js，因此这 16 项均实际执行。Node.js 仅用于这些测试，没有增加到付款执行器的生产依赖。
+
+在支持浏览器的常规测试主机或 CI 上执行：
+
+```bash
+python3 -m pip install -r python_executor/requirements.txt
+python3 -m playwright install --with-deps --only-shell chromium
+KWMEMBERSHIP_REQUIRE_BROWSER_TESTS=1 python3 -m unittest discover -s python_executor/tests -v
+```
+
+这是合成离线页面验证；不应将账号或真实卡配置到此 workflow。账号站点访问权限与完整运行时要求见 [ACCOUNT_BROWSER_RUNBOOK.md](ACCOUNT_BROWSER_RUNBOOK.md)。
 
 真实运行验收的代码、数据和证据缺口见 [INDEPENDENT_ENGINE.md](INDEPENDENT_ENGINE.md) 与 [DEPENDENCY_INVENTORY.md](DEPENDENCY_INVENTORY.md)。

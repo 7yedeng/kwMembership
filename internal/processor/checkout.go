@@ -406,7 +406,9 @@ func (p *Processor) checkoutExecute(ctx context.Context, execution checkoutExecu
 	if err != nil {
 		return p.checkoutRecordExecutionFailure(ctx, execution, err, now)
 	}
-	billing, err := p.address.Billing(ctx)
+	billing, err := p.resolveCardBilling(ctx, provider.CardReference{
+		PlatformKey: execution.Stage.ProviderKey, UpstreamCardID: execution.Stage.UpstreamCardID.Int64,
+	}, card)
 	if guardErr := p.assertWorkAllowed(ctx); guardErr != nil {
 		return guardErr
 	}
@@ -425,7 +427,7 @@ func (p *Processor) checkoutExecute(ctx context.Context, execution checkoutExecu
 		},
 		Material: &checkout.Material{
 			Card:    checkout.CardMaterial{Number: card.Number, CVV: card.CVV, ExpiryMonth: card.ExpiryMonth, ExpiryYear: card.ExpiryYear},
-			Billing: checkout.BillingAddress{Name: billing.Name, Line1: billing.Line1, City: billing.City, State: billing.State, PostalCode: billing.PostalCode, Country: billing.Country},
+			Billing: checkout.BillingAddress{Name: billing.Name, Line1: billing.Line1, Line2: billing.Line2, City: billing.City, State: billing.State, PostalCode: billing.PostalCode, Country: billing.Country},
 		},
 		Guard: guard,
 		Binding: checkout.ExecutionBinding{

@@ -7,6 +7,7 @@ validate real browser/React/Stripe behavior or any current production selector.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 import unittest
@@ -18,9 +19,20 @@ from python_executor.live import FILL_FRAME_JS
 @unittest.skipUnless(shutil.which("node"), "Node is unavailable for offline DOM doubles")
 class FillDOMTest(unittest.TestCase):
     def run_fixture(self, scenario: str) -> dict[str, object]:
+        scripts = Path(__file__).resolve().parents[2] / "internal" / "checkout" / "scripts.go"
+        go_source = re.search(r"const fillFrameFunction = `(.+?)`", scripts.read_text(), re.DOTALL)
+        self.assertIsNotNone(go_source, "Go fill function must remain independently testable")
+        outputs = []
+        for adapter, source in (("python", FILL_FRAME_JS), ("go", go_source.group(1))):
+            with self.subTest(adapter=adapter, scenario=scenario):
+                outputs.append(self.run_adapter_fixture(source, scenario))
+        self.assertEqual(outputs[0], outputs[1], "Go and Python fill adapters disagree")
+        return outputs[0]
+
+    def run_adapter_fixture(self, source: str, scenario: str) -> dict[str, object]:
         process = subprocess.run(
             [shutil.which("node"), str(Path(__file__).with_name("fill_dom_double.cjs"))],
-            input=json.dumps({"source": FILL_FRAME_JS, "scenario": scenario}),
+            input=json.dumps({"source": source, "scenario": scenario}),
             text=True, capture_output=True, timeout=5, check=False,
         )
         self.assertEqual(process.returncode, 0, "offline DOM evaluation failed")
@@ -53,6 +65,11 @@ class FillDOMTest(unittest.TestCase):
         self.assertIn("expiryMonth", result["filled"])
         self.assertIn("expiryYear", result["filled"])
 
+    def test_actual_billing_country_is_not_forced_to_price_contract_country(self) -> None:
+        result = self.run_fixture("actual-billing-country")["result"]
+        self.assertEqual(result["rejected"], [])
+        self.assertIn("billingCountry", result["filled"])
+
     def test_select_missing_requested_option_is_rejected(self) -> None:
         result = self.run_fixture("unsupported-select")["result"]
         self.assertIn("billingCountry", result["rejected"])
@@ -76,9 +93,33 @@ class FillDOMTest(unittest.TestCase):
         result = self.run_fixture("optional-invalid")["result"]
         self.assertIn("billingState", result["rejected"])
 
-    def test_present_optional_field_needs_supplied_material(self) -> None:
+    def test_present_required_state_needs_supplied_material(self) -> None:
         result = self.run_fixture("optional-missing-material")["result"]
         self.assertIn("billingState", result["rejected"])
+
+    def test_line2_requires_a_matching_readback(self) -> None:
+        accepted = self.run_fixture("line2-accepted")["result"]
+        self.assertIn("billingLine2", accepted["filled"])
+        self.assertEqual(accepted["rejected"], [])
+        rejected = self.run_fixture("line2-truncated")["result"]
+        self.assertIn("billingLine2", rejected["rejected"])
+        self.assertNotIn("billingLine2", rejected["filled"])
+
+    def test_blank_optional_state_and_postal_are_not_fabricated_or_required(self) -> None:
+        result = self.run_fixture("optional-empty-material")["result"]
+        self.assertEqual(result["rejected"], [])
+        self.assertNotIn("billingState", result["filled"])
+        self.assertNotIn("billingPostal", result["filled"])
+
+    def test_blank_state_and_postal_fail_when_the_page_requires_them(self) -> None:
+        postal = self.run_fixture("required-empty-postal")["result"]
+        self.assertIn("billingPostal", postal["rejected"])
+        state = self.run_fixture("aria-required-empty-state")["result"]
+        self.assertIn("billingState", state["rejected"])
+
+    def test_new_required_field_after_render_cannot_escape_fragment_validation(self) -> None:
+        result = self.run_fixture("new-required-after-render")["result"]
+        self.assertIn("billingPostal", result["rejected"])
 
     def test_javascript_guard_refuses_foreign_origin_without_a_setter(self) -> None:
         output = self.run_fixture("foreign-origin")

@@ -2,7 +2,7 @@
 
 研究日期：2026-11-13。基线：`varrge/kwMembership@16ceb97fc15f629c8b59df242e1baee2227e4c77`。
 
-目标是由自有服务负责账号操作、创建结账、填表、付款提交和结果确认；外部卡台负责卡片与资金能力。本分支已完成一批可测试的接口解耦和执行修复，**尚未完成独立生产启动、真实账号查询/取消续费适配器或真实付款验收**。默认 `cmd/membership-worker` 仍使用兼容构造器；新增构造器需要在自有启动入口显式接线。
+目标是由自有服务负责账号操作、创建结账、填表、付款提交和结果确认；外部卡台负责卡片与资金能力。本分支已完成可独立运行的无付款预检入口、按卡绑定账单资料、服务接口解耦和执行修复，**尚未完成完整 worker 的独立生产启动、真实账号查询/取消续费适配器或真实付款验收**。默认 `cmd/membership-worker` 仍使用兼容构造器；新增构造器需要在自有付款启动入口显式接线。
 
 ## 1. 保存的源码
 
@@ -68,15 +68,25 @@ type AccountService interface {
 
 **边界：这里没有伪造一个未核验的取消续费接口。真实 `Observe` / `CancelRenewal` 网络或浏览器实现还需要有授权的账号样本与可靠状态来源。**
 
-### 3.2 显式账单资料，无地址生成请求
+### 3.2 读取卡台资料并绑定到具体卡
 
-[`internal/provider/configured_billing.go`](../internal/provider/configured_billing.go) 提供 `ConfiguredBillingService`。它接收调用方提供的持卡人和账单地址，进行结构校验，保存不可变副本，通过 `Cardholder` / `Billing` 返回稳定资料，全程无网络请求。
+[`provider/spacex.go`](../internal/provider/spacex.go) 的 `GetCardMaterial` 在同一次卡详情 GET 中保留 `user_name`、`first_name`、`last_name` 和 `card_address`。缺失或全空地址保持未知，部分资料仍保留；`Line2` 从 provider、processor、bridge 一直传到执行器。
+
+[`processor/card_billing.go`](../internal/processor/card_billing.go) 在具体卡已选定后解析付款地址：
+
+1. 完整且结构有效的卡详情资料优先，完全不调用外部地址服务。
+2. 资料不全时，自有 `NewWithServices` 路径要求 `BillingForCard(ctx, CardReference)`，其中引用包含平台配置 key 与上游数字卡 ID。
+3. 显式配置只补缺失项；任一已知字段冲突就以 `CARD_BILLING_CONFLICT` 停止。找不到该卡配置不能借用另一张卡、另一个平台或随机地址。
+4. `NormalizeBillingAddress` 拒绝控制字符与过长字段，保留缺失值；结构校验不会证明资料已由发卡方验证。州、邮编的必填性由实际页面继续判断，不能无依据补成 `US/DE`。
+
+[`provider/card_bound_billing.go`](../internal/provider/card_bound_billing.go) 提供不可变 `CardBoundBillingService`。只使用已有卡的库存可以不提供开卡姓名；一旦尝试新开卡，缺失姓名会明确失败。新开卡使用调用方明确配置的完整姓名；返回的地址若不完整，需要这张新卡自己的配置条目，不能自动继承别张卡的地址。
 
 接线方式示意：
 
 ```go
-// profile comes from the card owner or issuer configuration.
-billing, err := provider.NewConfiguredBillingService(profile)
+// openingHolder and profiles come from the owner/issuer's confirmed data.
+// profiles is map[provider.CardReference]provider.BillingAddress.
+billing, err := provider.NewCardBoundBillingService(openingHolder, profiles)
 if err != nil {
     return err
 }
@@ -89,7 +99,9 @@ worker, err := processor.NewWithServices(
 
 `ownedAccounts` 必须是实际实现了 `AccountService` 的自有组件；本片段是依赖接线示意，不是完整独立启动程序。
 
-结构校验不会证明资料已被发卡行验证，也不会为不同卡片生成替代身份。这个实现只适用于分配给该 processor 的卡都使用同一账单资料的场景。多卡不同资料时，应改为按 `providerKey + upstreamCardID` 解析账单资料，并在 `checkoutExecute` 取到具体卡后绑定；当前双方法接口没有完成这项扩展。
+旧 `ConfiguredBillingService` 仍可提供一个稳定配置，但它没有卡 ID 绑定，不能作为自有路径缺失资料时的兜底。`New` / `NewWithExecutor` / `NewWithAccountService` 兼容构造器仍保留旧 unscoped 地址读取路径；即使在这些路径中，配置也不能覆盖与卡详情冲突的已知值。真正脱离生成服务应选择 `NewWithServices` 与按卡服务。
+
+开卡姓名、网页自动生成行为与公开 API 空值的详细证据见 [CARD_BILLING_RESEARCH.md](CARD_BILLING_RESEARCH.md)。
 
 ### 3.3 卡台 API 地址可配置
 
@@ -109,6 +121,14 @@ worker, err := processor.NewWithServices(
 - 填表前在 Python 侧检查 frame 的精确 HTTPS origin；填表 JS 再核对当前 origin。有输入字段时跨过渲染边界后重新定位并回读，核对格式化后的实际值及错误状态。任何已出现但未接受的字段都阻止提交；返回内容仅为字段名和布尔值。无输入字段的 frame 返回空字段集合，不贡献填写成功证据。
 
 填表回读的具体实现和实际执行过的离线测试见 [验证记录](VALIDATION.md)。
+
+### 3.5 脱离共享数据库的无付款预检
+
+[`cmd/membership-preflight`](../cmd/membership-preflight/main.go) 不加载 worker `.env`、不打开业务数据库，也不构造卡台或资金组件。默认 `--check` 只检查标准输入；`--inspect-session` 只报告已知 Session 字段的存在性和类型，均明确 `remoteVerified=false`。
+
+显式浏览器模式复用 Go 的预检执行器，卡材料、付款 Guard 和资金 Binding 为空。它不调用 `Processor.RunOnce`，不会使订单进入 `FUNDING_READY`。Session 模式可能创建远程 checkout 会话，属于有远程状态变化的无付款预检。免费账号手动登录的独立窗口预检、输入要求、退出码和使用方式见 [STANDALONE_CONTRACT.md](STANDALONE_CONTRACT.md)。
+
+该文档同时列出了 35 张业务表的 383 个列条目，其中 60 个列条目只有生产 SQL 使用证据，没有可复用的 DDL 声明。它不是生产迁移；本轮没有拼接测试表去冒充完整 worker 已可独立运行。
 
 ## 4. “只接卡台”要求卡台提供什么
 
@@ -136,17 +156,18 @@ worker, err := processor.NewWithServices(
 | 自动填表 | 有 selector、事件与回读逻辑 | 在真实目标页面确认输入被接收、账单资料匹配对应卡；不靠注入 `data-kw-*` 让测试过关 |
 | 提交后认证 | 当前提交后即报告并结束浏览器流程 | 明确处理需要认证/授权挂起/拒付；3DS 或持卡人认证按平台受支持流程完成 |
 | 独立订单与数据库 | 仍依赖 kwRedeem 配套、共享 schema 与配置 | 在同一权威数据库补完整迁移、订单入口、恢复入口、配置和幂等约束；空库启动与重启恢复可复现 |
-| 多卡账单绑定 | 固定 profile 组件可用 | 以具体供应商和卡 ID 取账单信息，并将绑定纳入许可或材料快照 |
+| 多卡账单绑定 | 卡详情优先、平台 key + 卡 ID 显式补齐和冲突拒绝已接入；Line2 透传 | 对真实卡详情确认资料含义与完整性；真实页面接受对应地址；资金许可仍绑定同一阶段/卡 |
 | 真实支付确认 | 原工作流有对账规则；本轮未真实付款 | 一次限定订单的提交、卡交易变化和会员状态变化能关联，超时后不会重复提交 |
 
 上游 `VerifySharedSchema` 只检查一组表名，源码还使用更多表和列；单元测试的精简建表语句不是生产迁移。现阶段不应通过创建空 `package.json`、伪造测试表或删除许可/配额检查来宣称独立部署成功。
 
 ## 6. 后续实施次序
 
-1. **保留原工作流状态机和许可边界，补齐单一数据库的权威 schema 与启动入口。** 订单、卡库存、资金意图、动作许可、对账证据仍属于同一数据库。
-2. **实现自有账号适配器并注入 `NewWithServices`。** 先完成只读观察，再实现支持的续费动作；取消和支付后的观察都必须是新证据。
-3. **以受支持目标页的真实脱敏样本完善页面适配。** 浏览器状态、选择器、金额解析与账号状态来源分别验证，不将演示字段当线上契约。
-4. **接一个卡台做限定范围验证。** 记录具体测试订单、目标套餐/币种、金额上限、卡片和账号引用；密钥与完整卡资料留在部署环境，不放仓库、PR 或测试快照。
-5. **验证异常恢复后再开放自动执行范围。** 尤其覆盖点击后断网、卡台响应丢失、授权挂起、重复 webhook、进程重启与过期租约。
+1. **先在有访问权限的独立浏览器完成免费账号无付款预检。** 当前受管浏览器拒绝目标账号站点访问，另一个执行环境的离线浏览器测试不能替代账号验证；操作顺序见 [ACCOUNT_BROWSER_RUNBOOK.md](ACCOUNT_BROWSER_RUNBOOK.md)。
+2. **保留原工作流状态机和许可边界，补齐单一数据库的权威 schema 与启动入口。** 订单、卡库存、资金意图、动作许可、对账证据仍属于同一数据库。
+3. **实现自有账号适配器并注入 `NewWithServices`。** 先完成只读观察，再实现支持的续费动作；取消和支付后的观察都必须是新证据。
+4. **以受支持目标页的真实脱敏样本完善页面适配。** 浏览器状态、选择器、金额解析与账号状态来源分别验证，不将演示字段当线上契约。
+5. **接一个卡台做限定范围验证。** 记录具体测试订单、目标套餐/币种、金额上限、卡片和账号引用；密钥与完整卡资料留在部署环境，不放仓库、PR 或测试快照。
+6. **验证异常恢复后再开放自动执行范围。** 尤其覆盖点击后断网、卡台响应丢失、授权挂起、重复 webhook、进程重启与过期租约。
 
 本轮没有使用真实 Session、卡台密钥或卡片进行交易，也没有绕过真实付款门禁。可复现的离线验证范围、命令和结果见 [VALIDATION.md](VALIDATION.md)。
