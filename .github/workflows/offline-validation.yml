@@ -103,6 +103,27 @@ jobs:
           PY
           sudo apt-get update
           sudo apt-get install --reinstall --yes google-chrome-stable
+      - name: Verify vendor bytes and tighten executable permissions
+        run: |
+          python - <<'PY'
+          import hashlib
+          from pathlib import Path
+
+          executable = Path('/opt/google/chrome/chrome')
+          manifest = Path('/var/lib/dpkg/info/google-chrome-stable.md5sums')
+          if executable.is_symlink() or executable.stat().st_uid != 0:
+              raise SystemExit('VENDOR_CHROME_PATH_UNTRUSTED')
+          if manifest.is_symlink() or manifest.stat().st_uid != 0 or manifest.stat().st_mode & 0o022:
+              raise SystemExit('VENDOR_PACKAGE_MANIFEST_UNTRUSTED')
+          expected = [line.split()[0] for line in manifest.read_text().splitlines()
+                      if line.split()[1:] == ['opt/google/chrome/chrome']]
+          with executable.open('rb') as stream:
+              actual = hashlib.file_digest(stream, 'md5').hexdigest()
+          if len(expected) != 1 or actual != expected[0]:
+              raise SystemExit('VENDOR_CHROME_PACKAGE_CHECKSUM_MISMATCH')
+          print('VENDOR_CHROME_PACKAGE_BYTES_VERIFIED')
+          PY
+          sudo chmod go-w /opt/google/chrome/chrome
       - name: Inspect the vendor-installed full Chrome runtime
         run: |
           command -v Xvfb

@@ -20,7 +20,7 @@
 
 [offline-validation.yml](../.github/workflows/offline-validation.yml) 中独立的 `chromium-headed-runtime` job：
 
-1. 在 `ubuntu-24.04` runner 通过现有官方 APT 源重新安装正式 `google-chrome-stable` 包，记录安装前后的 uid/gid/mode；检查 Xvfb 及发行版 Chrome AppArmor 配置。
+1. 在 `ubuntu-24.04` runner 通过现有官方 APT 源重新安装正式 `google-chrome-stable` 包，核对 APT 安装的 root 所有包清单中的文件校验值，移除浏览器文件的组写/其他用户写权限；记录 uid/gid/mode，检查 Xvfb 及发行版 Chrome AppArmor 配置。
 2. 使用包的标准 `/opt/google/chrome/chrome`，记录实际版本；不移动下载的浏览器、不增加权限规则。
 3. 检查该文件可执行、不是符号链接、由 root 持有且不可被组或其他用户写入。浏览器进程本身仍由非 root 运行。
 4. 以非 root 身份、独立 Xvfb display 调用实际 Go 启动检查；不增加 `--no-sandbox` 或修改宿主策略。
@@ -37,6 +37,8 @@
 该 Go 启动 job 使用 runner 的正式 Chrome 版本，**不声称它是 Playwright 1.61.0 绑定的浏览器版本**。原 `python-browser` job 继续用固定 1.61.0 的官方 headless shell 验证 Python/DOM，两种运行路径分别记录。
 
 [run 43406474692](https://github.com/7yedeng/kwMembership/actions/runs/43406474692) 确认镜像已有正式 Chrome 157.0.8103.50、包归属、Xvfb 和 AppArmor 文件，但在新增的二进制归属/写权限检查返回 `VENDOR_CHROME_OWNERSHIP_INVALID`，尚未启动浏览器。后续保留该检查，通过官方包重新安装并输出必要权限元数据；不删除检查或以下载文件覆盖系统路径。
+
+[run 43407049771](https://github.com/7yedeng/kwMembership/actions/runs/43407049771) 输出确认二进制为 root:root、mode 0777，重新安装后仍相同，因而在同一权限检查停止。后续先核对系统包清单中的原文件校验值，再用 `chmod go-w` 收紧该原文件权限，继续保留 root 所有及不可被组/其他用户写入的检查。包清单校验用于检查已由 APT 安装的文件完整性，不把 MD5 单独当作来源认证；没有修改 AppArmor、sysctl 或 sandbox 开关。
 
 在满足条件的 Linux 测试主机，可显式运行：
 
