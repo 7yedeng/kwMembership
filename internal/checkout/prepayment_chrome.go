@@ -41,6 +41,7 @@ type chromePrepaymentDriver struct {
 	fence           *prepaymentFence
 	once            sync.Once
 	closeErr        error
+	entryDiagnostic *CheckoutDiagnostic
 }
 
 func (c *ChromeExecutor) newPrepaymentDriver(parent context.Context) (prepaymentDriver, error) {
@@ -103,46 +104,17 @@ func (driver *chromePrepaymentDriver) Restore(ctx context.Context, prepared sess
 	return sessionrestore.Apply(ctx, prepared, driver.sessionBrowser, nil)
 }
 
-// bindPlusPreparation adds strict identity and explicit-free eligibility to the
-// already-reviewed Plus request. It does not guess Go/other private SKUs.
-func bindPlusPreparation(identity sessionrestore.Identity) (string, error) {
-	if normalizeEmail(identity.Email) == "" {
-		return "", prepaymentFail("PREPAYMENT_REQUEST_INVALID")
-	}
-	bound, err := json.Marshal(struct{ Email, UserID string }{identity.Email, identity.UserID})
-	if err != nil {
-		return "", prepaymentFail("PREPAYMENT_REQUEST_INVALID")
-	}
-	anchors := []struct{ old, replacement string }{
-		{"const accessToken = typeof session?.accessToken", "const target = " + string(bound) + `;
-    if (String(session?.user?.email || '').trim().toLowerCase() !== target.Email ||
-        target.UserID && session?.user?.id !== target.UserID || session?.error) return result({errorKind:'identity_changed'});
-    const accessToken = typeof session?.accessToken`},
-		{"if (accountID) {", "if (!accountID) return result({errorKind:'eligibility_unconfirmed'});\n    if (accountID) {"},
-		{"if (subscriptionResponse.ok) {", "if (!subscriptionResponse.ok) return result({errorKind:'eligibility_unconfirmed'});\n      if (subscriptionResponse.ok) {"},
-		{"const paidPlan = ['go', 'plus', 'prolite', 'pro', 'team', 'business', 'enterprise'].includes(plan);", `const paidPlan = ['go', 'plus', 'prolite', 'pro', 'team', 'business', 'enterprise'].includes(plan);
-        if (plan !== 'free') return result({errorKind:paidPlan ? 'already_subscribed' : 'eligibility_unconfirmed'});`},
-	}
-	expression := preparePlusCheckoutJS
-	for _, anchor := range anchors {
-		if strings.Count(expression, anchor.old) != 1 {
-			return "", prepaymentFail("PREPAYMENT_CHECKOUT_CONTRACT_CHANGED")
-		}
-		expression = strings.Replace(expression, anchor.old, anchor.replacement, 1)
-	}
-	return expression, nil
-}
-
 func (driver *chromePrepaymentDriver) OpenPlus(ctx context.Context, identity sessionrestore.Identity) error {
 	expression, err := bindPlusPreparation(identity)
 	if err != nil {
 		return err
 	}
 	return driver.withContext(ctx, func(target context.Context) error {
-		var entry plusCheckoutEntry
+		var entry prepaymentCheckoutEntry
 		if err := chromedp.Run(target, chromedp.Evaluate(expression, &entry, authenticatedIdentityEvalOptions...)); err != nil {
 			return prepaymentFail("PREPAYMENT_CHECKOUT_UNAVAILABLE")
 		}
+		driver.entryDiagnostic = SanitizeCheckoutDiagnostic(entry.Diagnostic)
 		switch entry.ErrorKind {
 		case "":
 		case "identity_changed":
@@ -154,8 +126,13 @@ func (driver *chromePrepaymentDriver) OpenPlus(ctx context.Context, identity ses
 		default:
 			return prepaymentFail("PREPAYMENT_CHECKOUT_UNAVAILABLE")
 		}
-		checkoutURL, resolveErr := resolvePlusCheckoutEntry(entry)
+		// Validate original facts before normalizing them for display.
+		if !entry.Diagnostic.confirmsFreeCheckout() {
+			return prepaymentFail("PREPAYMENT_CHECKOUT_CONTRACT_CHANGED")
+		}
+		checkoutURL, resolveErr := resolvePlusCheckoutEntry(entry.plusCheckoutEntry)
 		if resolveErr != nil {
+			driver.entryDiagnostic.Reason = "checkout_contract_unrecognized"
 			return prepaymentFail("PREPAYMENT_CHECKOUT_CONTRACT_CHANGED")
 		}
 		if err := navigate(target, checkoutURL); err != nil {

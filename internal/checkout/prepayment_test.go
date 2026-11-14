@@ -359,16 +359,14 @@ func TestPrepaymentObservationDoesNotTrustInjectedLegacyPriceFacts(t *testing.T)
 	_ = fake
 }
 
-func TestBoundPlusPreparationChecksIdentityAndExplicitEligibilityBeforePost(t *testing.T) {
-	expression, err := bindPlusPreparation(sessionrestore.Identity{Email: "fixture@example.invalid", UserID: "synthetic-user"})
+func TestBoundPlusPreparationBindsIdentityWithoutTextualGuardInsertion(t *testing.T) {
+	expression, err := bindPlusPreparation(sessionrestore.Identity{Email: " Fixture@Example.invalid ", UserID: "synthetic-user"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	post := strings.Index(expression, "const checkoutResponse")
-	for _, required := range []string{"target.UserID", "identity_changed", "eligibility_unconfirmed", "plan !== 'free'"} {
-		index := strings.Index(expression, required)
-		if index < 0 || index >= post {
-			t.Fatalf("missing pre-POST fence: %s", required)
-		}
+	if strings.Contains(expression, "__PREPAYMENT_IDENTITY__") ||
+		strings.Count(expression, `{"Email":"fixture@example.invalid","UserID":"synthetic-user"}`) != 1 ||
+		expression == preparePlusCheckoutJS {
+		t.Fatal("isolated entry did not bind the normalized identity exactly once")
 	}
 }

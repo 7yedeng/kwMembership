@@ -69,12 +69,16 @@ func (fixture *fixturePrepaymentChrome) OpenPlus(ctx context.Context, identity s
 		return err
 	}
 	return fixture.withContext(ctx, func(target context.Context) error {
-		var entry plusCheckoutEntry
+		var entry prepaymentCheckoutEntry
 		if err := chromedp.Run(target, chromedp.Evaluate(fixture.localScript(expression), &entry, authenticatedIdentityEvalOptions...)); err != nil {
 			return err
 		}
+		fixture.entryDiagnostic = SanitizeCheckoutDiagnostic(entry.Diagnostic)
 		if entry.ErrorKind != "" || entry.ResponseTag != "hosted_checkout_session" || entry.CheckoutURL != fixture.mainURL+"/checkout" {
 			return prepaymentFail("PREPAYMENT_CHECKOUT_CONTRACT_CHANGED")
+		}
+		if !entry.Diagnostic.confirmsFreeCheckout() {
+			return prepaymentFail("PREPAYMENT_ELIGIBILITY_UNCONFIRMED")
 		}
 		return chromedp.Run(target, chromedp.Navigate(entry.CheckoutURL))
 	})
@@ -189,6 +193,7 @@ func TestPrepaymentChromeRuntimeLocal(t *testing.T) {
 		t.Fatal("prepayment runtime requires non-root full Chrome and an isolated display")
 	}
 	var checkoutCreates atomic.Int32
+	var accountReads atomic.Int32
 	var selectedCycles atomic.Int32
 	var unexpected atomic.Int32
 	var mainServer, cardServer, foreignServer *httptest.Server
@@ -237,9 +242,12 @@ document.addEventListener('input',e=>{if(variant===1&&e.target.name==='number')e
 		case r.Method == "GET" && r.URL.Path == "/api/auth/session":
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(w, `{"user":{"id":"synthetic-user","email":"fixture@example.invalid"},"account":{"id":"fixture-account"},"accessToken":"fixture-access-token"}`)
-		case r.Method == "GET" && r.URL.Path == "/backend-api/subscriptions":
+		case r.Method == "GET" && r.URL.Path == "/backend-api/accounts/check/v4-2023-04-27":
+			accountReads.Add(1)
 			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprint(w, `{"plan_type":"free"}`)
+			// An explicit inactive entitlement, without a plan_type, is the
+			// compatibility case the previous subscription-only guard missed.
+			fmt.Fprint(w, `{"default_account":"default","accounts":{"default":{"account":{"account_id":"fixture-account","user_id":"synthetic-user","structure":"personal"},"entitlement":{"has_active_subscription":false}}}}`)
 		case r.Method == "POST" && r.URL.Path == "/backend-api/payments/checkout":
 			var body struct {
 				Plan    string                             `json:"plan_name"`
@@ -319,6 +327,9 @@ document.addEventListener('input',e=>{if(variant===1&&e.target.name==='number')e
 			if driver == nil || driver.fixtureErr != nil || !report.BrowserClosed || report.PaymentAllowed || report.SubmitActivated {
 				t.Fatalf("native lifecycle failed: %+v", report)
 			}
+			if !report.CheckoutDiagnostic.confirmsFreeCheckout() || report.CheckoutDiagnostic.Source != "account_entitlement" {
+				t.Fatal("native eligibility evidence was not retained")
+			}
 			snapshot := driver.closedSnapshot
 			if snapshot.Click != 0 || snapshot.Submit != 0 || snapshot.RequestSubmit != 0 || !snapshot.ForeignEmpty || cycle != 4 && !snapshot.TaxReady || !snapshot.StorageWasEmpty || driver.oopifCount < 1 {
 				t.Fatalf("unsafe page side effect: %+v", snapshot)
@@ -328,8 +339,8 @@ document.addEventListener('input',e=>{if(variant===1&&e.target.name==='number')e
 			}
 		})
 	}
-	if checkoutCreates.Load() != selectedCycles.Load() || unexpected.Load() != 0 {
-		t.Fatalf("fixture requests: checkout=%d unexpected=%d", checkoutCreates.Load(), unexpected.Load())
+	if checkoutCreates.Load() != selectedCycles.Load() || accountReads.Load() != selectedCycles.Load() || unexpected.Load() != 0 {
+		t.Fatalf("fixture requests: checkout=%d account=%d unexpected=%d", checkoutCreates.Load(), accountReads.Load(), unexpected.Load())
 	}
 }
 

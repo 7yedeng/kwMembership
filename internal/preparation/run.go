@@ -126,6 +126,7 @@ func wrapReport(input Input, resolver *cardResolver, observed checkout.Prepaymen
 		SubmitActivated:         observed.SubmitActivated,
 		SubmissionBlocked:       observed.SubmissionBlocked,
 		SubmissionFenceVerified: observed.SubmissionFenceVerified,
+		CheckoutDiagnostic:      checkout.SanitizeCheckoutDiagnostic(observed.CheckoutDiagnostic),
 	}}
 	if IsProgressPhase(observed.Stage) || observed.Stage == "input" {
 		report.Stage = observed.Stage

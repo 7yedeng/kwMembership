@@ -38,6 +38,8 @@ jobs:
         run: |
           node --check tools/userscript/session-login.user.js
           node --test tools/userscript/session-login.test.cjs tools/userscript/session-login.ui.test.cjs
+      - name: Verify account eligibility response contracts offline
+        run: node --test scripts/test-prepayment-entry.cjs
       - name: Verify desktop controller without starting a browser
         run: |
           python3 -m unittest discover -s tools/session-desktop -p 'test_*.py' -v

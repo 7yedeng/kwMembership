@@ -34,25 +34,26 @@ func (PrepaymentRequest) GoString() string { return "[protected prepayment reque
 // CountrySource distinguishes the requested checkout market from the actual
 // billing country; a visible currency is not used to infer either country.
 type PrepaymentReport struct {
-	Operation               string         `json:"operation"`
-	Code                    string         `json:"code"`
-	Stage                   string         `json:"stage"`
-	TargetFingerprint       string         `json:"targetFingerprint,omitempty"`
-	CookieReadbackVerified  bool           `json:"cookieReadbackVerified"`
-	IdentityMatch           bool           `json:"identityMatch"`
-	Quote                   *ReviewedQuote `json:"quote,omitempty"`
-	EvidenceSource          string         `json:"evidenceSource"`
-	CountrySource           string         `json:"countrySource"`
-	MissingFacts            []string       `json:"missingFacts,omitempty"`
-	BillingVerified         bool           `json:"billingVerified"`
-	FieldsVerified          bool           `json:"fieldsVerified"`
-	ReadyForConfirmation    bool           `json:"readyForConfirmation"`
-	BrowserOpened           bool           `json:"browserOpened"`
-	BrowserClosed           bool           `json:"browserClosed"`
-	PaymentAllowed          bool           `json:"paymentAllowed"`
-	SubmitActivated         bool           `json:"submitActivated"`
-	SubmissionBlocked       bool           `json:"submissionBlocked"`
-	SubmissionFenceVerified bool           `json:"submissionFenceVerified"`
+	Operation               string              `json:"operation"`
+	Code                    string              `json:"code"`
+	Stage                   string              `json:"stage"`
+	TargetFingerprint       string              `json:"targetFingerprint,omitempty"`
+	CookieReadbackVerified  bool                `json:"cookieReadbackVerified"`
+	IdentityMatch           bool                `json:"identityMatch"`
+	Quote                   *ReviewedQuote      `json:"quote,omitempty"`
+	EvidenceSource          string              `json:"evidenceSource"`
+	CountrySource           string              `json:"countrySource"`
+	MissingFacts            []string            `json:"missingFacts,omitempty"`
+	BillingVerified         bool                `json:"billingVerified"`
+	FieldsVerified          bool                `json:"fieldsVerified"`
+	ReadyForConfirmation    bool                `json:"readyForConfirmation"`
+	BrowserOpened           bool                `json:"browserOpened"`
+	BrowserClosed           bool                `json:"browserClosed"`
+	PaymentAllowed          bool                `json:"paymentAllowed"`
+	SubmitActivated         bool                `json:"submitActivated"`
+	SubmissionBlocked       bool                `json:"submissionBlocked"`
+	SubmissionFenceVerified bool                `json:"submissionFenceVerified"`
+	CheckoutDiagnostic      *CheckoutDiagnostic `json:"checkoutDiagnostic,omitempty"`
 }
 
 type PrepaymentExecutor interface {
@@ -280,7 +281,11 @@ func runPrepayment(parent context.Context, request PrepaymentRequest, timeout ti
 		return report, prepaymentFail("PREPAYMENT_IDENTITY_CHANGED")
 	}
 	stage("opening_checkout")
-	if err = driver.OpenPlus(operation, prepared.Identity()); err != nil {
+	err = driver.OpenPlus(operation, prepared.Identity())
+	if reader, ok := driver.(prepaymentDiagnosticReader); ok {
+		report.CheckoutDiagnostic = SanitizeCheckoutDiagnostic(reader.CheckoutDiagnostic())
+	}
+	if err != nil {
 		return report, err
 	}
 	stage("reviewing_quote")

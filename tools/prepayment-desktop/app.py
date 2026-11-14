@@ -19,7 +19,7 @@ from typing import Any
 
 MAX_INPUT_BYTES = 384 << 10
 MAX_REPORT_BYTES = 32 << 10
-DIAGNOSTIC_VERSION = "20261114.1"
+DIAGNOSTIC_VERSION = "20261114.2"
 ALLOWED_CODES = set("""
 PREPARATION_INPUT_CHECKED PREPARATION_FAILED PREPARATION_ARGUMENTS_INVALID
 PREPARATION_INPUT_INVALID PREPARATION_INPUT_TOO_LARGE PREPARATION_CARD_CONFIGURATION_INVALID
@@ -80,8 +80,62 @@ ERROR_HINTS = {
     "PREPARATION_CARD_OPERATION_REJECTED": "卡台返回业务拒绝。请在卡台后台核对凭据权限和卡片状态；这里不显示原始响应内容。",
     "PREPARATION_CARD_UNAVAILABLE": "卡台读取未完成，或未返回可识别的错误类别；尚不能据此确定为白名单问题。",
     "PREPAYMENT_ALREADY_SUBSCRIBED": "此账号已被识别为已有付费订阅，程序在创建新订阅之前停止。",
+    "PREPAYMENT_ELIGIBILITY_UNCONFIRMED": "尚未确认当前账号的订阅资格；这不等于账号被确认不能购买。请查看下方查询阶段与固定原因。",
     "PREPAYMENT_CHECKOUT_UNAVAILABLE": "未能建立或打开结账；此步骤发生在读取 Zovo 卡片之前。",
     "PREPAYMENT_FENCE_UNAVAILABLE": "付款拦截保护未能持续确认，程序已停止并清理浏览器。",
+}
+CHECKOUT_PHASE_LABELS = {
+    "session": "再次核对实时会话", "account_lookup": "查询实时账号与订阅权益",
+    "subscription_lookup": "查询旧订阅接口", "checkout_create": "创建付款结账", "complete": "结账创建响应已取得",
+}
+CHECKOUT_SOURCE_LABELS = {
+    "none": "尚未取得可确认的资格来源", "account_entitlement": "实时账号与订阅权益", "subscription": "旧订阅接口",
+}
+CHECKOUT_BINDING_LABELS = {
+    "none": "未确认", "session": "来自实时会话", "default": "来自服务端明确默认账号", "matched": "实时账号已匹配",
+}
+CHECKOUT_PLAN_LABELS = {"unknown": "未确认", "free": "免费", "paid": "付费"}
+CHECKOUT_ACTIVE_LABELS = {"unknown": "未确认", "true": "有有效订阅", "false": "无有效订阅"}
+CHECKOUT_REASON_HINTS = {
+    "none": "尚未取得更具体的原因",
+    "context_invalid": "当前页面不是预期的账号站点",
+    "session_http_rejected": "实时会话接口返回非成功状态",
+    "session_network_error": "读取实时会话时出现网络错误",
+    "session_timeout": "读取实时会话超时",
+    "session_response_invalid": "实时会话响应不符合已支持的结构",
+    "identity_changed": "实时会话身份与本次目标账号不一致",
+    "access_token_missing": "实时会话未提供后续查询需要的访问凭据",
+    "account_binding_missing": "尚未找到可绑定的目标账号或明确默认账号",
+    "account_binding_invalid": "账号绑定字段格式不符合已支持的结构",
+    "account_binding_conflict": "会话与服务端账号绑定信息存在冲突",
+    "account_http_rejected": "实时账号查询返回非成功状态",
+    "account_network_error": "读取实时账号时出现网络错误",
+    "account_timeout": "读取实时账号超时",
+    "account_response_invalid": "实时账号响应不符合已支持的结构",
+    "account_default_invalid": "服务端默认账号指向的记录无法确认",
+    "account_not_found": "实时账号响应中没有找到已绑定的目标账号",
+    "account_ambiguous": "账号记录存在歧义，程序没有自行选择其他账号",
+    "account_identity_mismatch": "实时账号记录与本次绑定的身份不一致",
+    "workspace_unsupported": "当前账号属于本入口不支持的工作区类型",
+    "entitlement_invalid": "订阅权益或有效状态字段不符合已支持的结构",
+    "plan_unknown": "当前套餐尚不能可靠识别，程序没有将其当作免费",
+    "already_subscribed": "实时信息显示已有付费套餐或有效订阅",
+    "subscription_http_rejected": "旧订阅接口返回非成功状态",
+    "subscription_network_error": "读取旧订阅接口时出现网络错误",
+    "subscription_timeout": "读取旧订阅接口超时",
+    "subscription_response_invalid": "旧订阅接口响应不符合已支持的结构",
+    "subscription_plan_missing": "旧订阅接口没有提供明确的免费套餐证据",
+    "checkout_http_rejected": "创建结账接口返回非成功状态",
+    "checkout_unauthorized": "创建结账接口拒绝当前会话的授权",
+    "checkout_network_error": "创建结账请求出现网络错误；没有自动重发",
+    "checkout_timeout": "创建结账请求超时；没有自动重发",
+    "checkout_response_invalid": "创建结账的响应不符合已支持的结构",
+    "checkout_contract_unrecognized": "结账响应的链接或标记尚不被本工具支持，未继续导航",
+    "checkout_created": "已取得创建结账的响应，后续仍需打开并核对实际页面",
+}
+CHECKOUT_HTTP_LABELS = {
+    "sessionHttpStatus": "实时会话", "accountHttpStatus": "账号查询",
+    "subscriptionHttpStatus": "旧订阅查询", "checkoutHttpStatus": "创建结账",
 }
 UNCONFIRMED = {
     "card_balance_currency": "卡余额币种未由卡台明确返回",
@@ -159,12 +213,35 @@ def command(binary: str, chrome: str, execute: bool, show: bool) -> list[str]:
     return arguments
 
 
+def safe_checkout_diagnostic(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    result: dict[str, Any] = {}
+    for key, allowed in (("phase", CHECKOUT_PHASE_LABELS), ("reason", CHECKOUT_REASON_HINTS),
+                         ("source", CHECKOUT_SOURCE_LABELS), ("accountBinding", CHECKOUT_BINDING_LABELS),
+                         ("plan", CHECKOUT_PLAN_LABELS), ("activeSubscription", CHECKOUT_ACTIVE_LABELS)):
+        item = value.get(key)
+        if isinstance(item, str) and item in allowed:
+            result[key] = item
+    for key in CHECKOUT_HTTP_LABELS:
+        item = value.get(key)
+        if type(item) is int and (item == 0 or 100 <= item <= 599):
+            result[key] = item
+    for key in ("accountIdPresent", "checkoutRequested"):
+        if type(value.get(key)) is bool:
+            result[key] = value[key]
+    return result
+
+
 def safe_report(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict) or not isinstance(value.get("code"), str) or value["code"] not in ALLOWED_CODES:
         return {"code": "PREPARATION_REPORT_INVALID"}
     result: dict[str, Any] = {"code": value["code"]}
     if isinstance(value.get("stage"), str) and value["stage"] in STAGE_LABELS:
         result["stage"] = value["stage"]
+    checkout_diagnostic = safe_checkout_diagnostic(value.get("checkoutDiagnostic"))
+    if checkout_diagnostic:
+        result["checkoutDiagnostic"] = checkout_diagnostic
     for key in BOOL_FIELDS:
         if type(value.get(key)) is bool:
             result[key] = value[key]
@@ -208,7 +285,7 @@ def safe_report(value: Any) -> dict[str, Any]:
 def diagnostic_report(value: Any, last_phase: str = "") -> dict[str, Any]:
     """Fixed diagnostic facts only; omit account, quote, card and credential data."""
     clean = safe_report(value)
-    result = {key: clean[key] for key in ("code", "stage", *BOOL_FIELDS, "fundingActionsTaken") if key in clean}
+    result = {key: clean[key] for key in ("code", "stage", *BOOL_FIELDS, "fundingActionsTaken", "checkoutDiagnostic") if key in clean}
     result["diagnosticVersion"] = DIAGNOSTIC_VERSION
     if isinstance(last_phase, str) and last_phase in PHASES:
         result["lastProgressStage"] = last_phase
@@ -294,6 +371,7 @@ def completion_message(report: dict[str, Any], exit_code: int) -> str:
 
 
 def review_text(report: dict[str, Any]) -> str:
+    report = safe_report(report)
     lines = ["状态：" + report.get("code", "PREPARATION_REPORT_INVALID")]
     stage = report.get("stage")
     if stage in STAGE_LABELS:
@@ -301,6 +379,29 @@ def review_text(report: dict[str, Any]) -> str:
     hint = ERROR_HINTS.get(report.get("code"))
     if hint:
         lines.append(hint)
+    diagnostic = report.get("checkoutDiagnostic")
+    if diagnostic:
+        lines.append("账号资格与结账诊断：")
+        if diagnostic.get("phase") in CHECKOUT_PHASE_LABELS:
+            lines.append("查询阶段：" + CHECKOUT_PHASE_LABELS[diagnostic["phase"]])
+        if diagnostic.get("reason") in CHECKOUT_REASON_HINTS:
+            lines.append("原因：" + CHECKOUT_REASON_HINTS[diagnostic["reason"]] + "（" + diagnostic["reason"] + "）")
+        if diagnostic.get("source") in CHECKOUT_SOURCE_LABELS:
+            lines.append("资格来源：" + CHECKOUT_SOURCE_LABELS[diagnostic["source"]])
+        if diagnostic.get("accountBinding") in CHECKOUT_BINDING_LABELS:
+            lines.append("账号绑定：" + CHECKOUT_BINDING_LABELS[diagnostic["accountBinding"]])
+        lines.append("套餐分类：" + CHECKOUT_PLAN_LABELS.get(diagnostic.get("plan"), "未确认") +
+                     "；有效订阅：" + CHECKOUT_ACTIVE_LABELS.get(diagnostic.get("activeSubscription"), "未确认"))
+        for key, label in CHECKOUT_HTTP_LABELS.items():
+            status = diagnostic.get(key)
+            if status:
+                lines.append(label + " HTTP：" + str(status))
+        if diagnostic.get("checkoutRequested") is True:
+            lines.append("创建结账请求：已发起；这不代表结账页面已打开，也不代表已经付款。")
+        elif diagnostic.get("checkoutRequested") is False:
+            lines.append("创建结账请求：尚未发起。")
+        else:
+            lines.append("创建结账请求：未确认。")
     if report.get("readyForConfirmation") is not True and report.get("code") != "PREPARATION_INPUT_CHECKED":
         if stage in ("input", "input_validated", "browser_starting", "restoring_session", "opening_checkout"):
             lines.append("该阶段尚未查询 Zovo 卡台；本次停止不能归因于卡台请求被白名单拒绝。")
@@ -515,7 +616,7 @@ class Application:
             return
         self.root.clipboard_clear()
         self.root.clipboard_append(json.dumps(self.last_diagnostic, ensure_ascii=False, indent=2))
-        self.status.set("已复制脱敏诊断：只有固定错误码、阶段和校验标志，不含 Session、API Secret、账号、金额或卡片资料。")
+        self.status.set("已复制脱敏诊断：只有固定原因、阶段、状态码和校验标志，不含 Session、API Secret、账号标识、金额或卡片资料。")
 
     def poll(self) -> None:
         while True:

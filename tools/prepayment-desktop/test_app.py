@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import queue
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -29,6 +30,20 @@ def ready_report():
         "card": {"cardBindingVerified": True, "last4": "4242", "availableAmount": "30", "currency": "",
                  "balanceCurrencyKnown": False, "balanceComparable": False, "merchantRestrictionsKnown": False, "billingSource": "provider"},
         "unconfirmed": ["card_balance_currency", "card_balance_sufficiency", "merchant_restrictions"],
+    }
+
+
+def eligibility_failure_report():
+    return {
+        "code": "PREPAYMENT_ELIGIBILITY_UNCONFIRMED", "stage": "opening_checkout", "inputValid": True,
+        "cookieReadbackVerified": True, "identityMatch": True, "browserOpened": True, "browserClosed": True,
+        "paymentAllowed": False, "submitActivated": False, "fundingActionsTaken": 0,
+        "checkoutDiagnostic": {
+            "phase": "account_lookup", "reason": "account_http_rejected", "source": "none",
+            "sessionHttpStatus": 200, "accountHttpStatus": 403, "subscriptionHttpStatus": 0, "checkoutHttpStatus": 0,
+            "accountIdPresent": True, "accountBinding": "session", "plan": "unknown",
+            "activeSubscription": "unknown", "checkoutRequested": False,
+        },
     }
 
 
@@ -145,6 +160,81 @@ class DesktopContractTests(unittest.TestCase):
                     app.save_diagnostic(ready_report(), directory=folder)
             self.assertEqual(target.read_bytes(), before)
             self.assertEqual([item.name for item in folder.iterdir()], ["last-diagnostic.json"])
+
+    def test_eligibility_failure_preserves_query_reason_and_pre_checkout_state(self):
+        report = eligibility_failure_report()
+        event, clean = app.safe_event(json.dumps({"event": "result", "report": report}).encode())
+        self.assertEqual(event, "result")
+        self.assertEqual(clean["checkoutDiagnostic"], report["checkoutDiagnostic"])
+        text = app.review_text(clean)
+        self.assertIn("实时账号查询返回非成功状态", text)
+        self.assertIn("账号查询 HTTP：403", text)
+        self.assertIn("创建结账请求：尚未发起", text)
+        self.assertIn("套餐分类：未确认", text)
+        self.assertNotIn("套餐分类：免费", text)
+        self.assertIn("尚未查询 Zovo", text)
+        created = copy.deepcopy(report)
+        created["checkoutDiagnostic"].update({"phase": "complete", "reason": "checkout_created", "plan": "free",
+                                             "source": "account_entitlement", "checkoutHttpStatus": 200, "checkoutRequested": True})
+        created_text = app.review_text(created)
+        self.assertIn("创建结账请求：已发起", created_text)
+        self.assertIn("不代表结账页面已打开", created_text)
+
+    def test_checkout_diagnostic_strict_types_and_unknown_values_never_become_free(self):
+        valid = eligibility_failure_report()["checkoutDiagnostic"]
+        for key in ("phase", "reason", "source", "accountBinding", "plan", "activeSubscription"):
+            for invalid in ("synthetic-private-value", None, [], {}):
+                with self.subTest(key=key, invalid=invalid):
+                    value = copy.deepcopy(valid); value[key] = invalid
+                    self.assertNotIn(key, app.safe_checkout_diagnostic(value))
+        for key in app.CHECKOUT_HTTP_LABELS:
+            for invalid in (-1, 1, 99, 600, 200.5, "200", True):
+                value = copy.deepcopy(valid); value[key] = invalid
+                self.assertNotIn(key, app.safe_checkout_diagnostic(value))
+            for allowed in (0, 100, 200, 599):
+                value = copy.deepcopy(valid); value[key] = allowed
+                self.assertEqual(app.safe_checkout_diagnostic(value)[key], allowed)
+        for key in ("accountIdPresent", "checkoutRequested"):
+            for invalid in (0, 1, "false", "true", None, []):
+                value = copy.deepcopy(valid); value[key] = invalid
+                self.assertNotIn(key, app.safe_checkout_diagnostic(value))
+        report = eligibility_failure_report()
+        report["checkoutDiagnostic"].update({"plan": "synthetic-private-value", "checkoutRequested": "true"})
+        text = app.review_text(report)
+        self.assertIn("套餐分类：未确认", text)
+        self.assertIn("创建结账请求：未确认", text)
+        self.assertNotIn("套餐分类：免费", text)
+        self.assertNotIn("创建结账请求：已发起", text)
+
+    def test_nested_checkout_diagnostic_stays_private_in_render_copy_and_saved_file(self):
+        report = eligibility_failure_report()
+        private = "synthetic-private-checkout-value"
+        report["checkoutDiagnostic"].update({"accountId": private, "email": private, "accessToken": private,
+                                             "url": "https://private.invalid/" + private, "body": {"secret": private}})
+        report.update({"session": private, "appSecret": private, "targetFingerprint": "0123456789abcdef"})
+        diagnostic = app.diagnostic_report(report, "opening_checkout")
+        self.assertEqual(diagnostic["diagnosticVersion"], "20261114.2")
+        self.assertEqual(diagnostic["checkoutDiagnostic"]["reason"], "account_http_rejected")
+        rendered = app.review_text(report)
+        writes = []
+        application = app.Application.__new__(app.Application)
+        application.last_diagnostic = diagnostic
+        application.root = SimpleNamespace(clipboard_clear=lambda: writes.clear(), clipboard_append=writes.append)
+        application.status = SimpleNamespace(set=lambda value: None)
+        application.copy_diagnostic()
+        self.assertEqual(json.loads(writes[0]), diagnostic)
+        with tempfile.TemporaryDirectory() as directory:
+            target = app.save_diagnostic(report, "opening_checkout", Path(directory))
+            saved = target.read_text(encoding="utf-8")
+            self.assertEqual(json.loads(saved)["checkoutDiagnostic"], diagnostic["checkoutDiagnostic"])
+        for output in (rendered, writes[0], saved):
+            self.assertNotIn(private, output)
+            self.assertNotIn("private.invalid", output)
+            self.assertNotIn('"accountId"', output)
+        for output in (writes[0], saved):
+            self.assertNotIn("0123456789abcdef", output)
+            self.assertNotIn('"quote"', output)
+            self.assertNotIn('"card"', output)
 
     def test_unknown_balance_currency_remains_explicitly_unconfirmed(self):
         report = app.safe_report(ready_report())

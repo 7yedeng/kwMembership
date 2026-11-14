@@ -20,7 +20,7 @@ Windows 包中的入口是 `tools/prepayment-desktop/start.cmd`，主程序为 `
 
 默认勾选“显示独立 Chrome”。达到审核状态后，结果会立即显示，浏览器最多保留两分钟用于观察；没有“确认付款”按钮。关闭窗口或点击取消会请求子进程取消，并等待它关闭浏览器，不能把取消后的结果当作正常完成。
 
-**浏览器短暂出现后关闭，不代表已经填表完成。** 两分钟观察只在 `review_ready` 成功后开始；此前任何失败都会立即关闭任务浏览器。诊断版 `20261114.1` 会在结果页保留最终 `stage`，显示固定错误码的解释，并提供“复制脱敏诊断”。每次结束还会覆盖 `tools/prepayment-desktop/logs/last-diagnostic.json`，只保存固定错误码、阶段、校验布尔值、版本和时间，不保存账号指纹、报价、卡片信息、Session 或 API Secret。保存失败时仍可从界面复制。
+**浏览器短暂出现后关闭，不代表已经填表完成。** 两分钟观察只在 `review_ready` 成功后开始；此前任何失败都会立即关闭任务浏览器。诊断版 `20261114.2` 在结果页保留最终 `stage`，并显示账号资格查询的固定原因、HTTP 状态及是否已发起创建结账请求。通过“复制脱敏诊断”可复制这些事实；每次结束还会覆盖 `tools/prepayment-desktop/logs/last-diagnostic.json`。文件只保存固定枚举、阶段、HTTP 状态、校验布尔值、版本和时间，不保存账号标识或指纹、报价、卡片信息、Session、API Secret、原始响应或结账链接。保存失败时仍可从界面复制。
 
 预算没有默认值：请填入你允许的最终总额范围，税费和折扣也必须来自结账事实。文档和测试中的数字都是合成用例，不代表当前套餐售价。账单国家填写实际发卡资料，不自动改成 PH，也不调用随机地址生成器。
 
@@ -94,7 +94,7 @@ stderr 仅输出固定的 `PREPARATION_STAGE <阶段>`，不输出原始浏览�
 
 1. 严格解析输入，绑定 Session 的目标邮箱和可用用户 ID。
 2. 创建独立任务 Chrome，调用共享 Session 核心写入 Cookie、精确回读并核验真实账号；后续步骤继续使用这个浏览器。
-3. 检查账号资格，进入明确的 Plus / PH / PHP 结账。已有付费订阅或未能确认套餐时停止。
+3. 再次核对实时会话身份，读取实时账号与订阅权益，绑定同一账号并确认免费资格，再创建明确的 Plus / PH / PHP 结账。已有付费订阅、账号冲突或未能确认资格时停止；来源及固定原因记录在 `checkoutDiagnostic` 中。
 4. 需要账单才能计税时，先读取所选 Zovo 卡快照并填写实际账单资料。
 5. 等待实际税费与总额出现，核验套餐、币种、金额算式和用户预算。
 6. 从同一份已缓存快照取得完整卡材料，核对卡片归属、ACTIVE 状态、有效期与已知商户禁用规则，填写卡字段并精确回读。
@@ -125,7 +125,7 @@ stderr 仅输出固定的 `PREPARATION_STAGE <阶段>`，不输出原始浏览�
 
 新增模块的测试只使用合成 Session、合成卡片、fake executor 和卡快照替身。覆盖了重复字段/未知命令、凭据不进参数和报告、绑定冲突、同卡两阶段缓存、余额币种未知、商户禁用、账号与字段证据、最终金额算式、GUI ready/最终结果顺序、取消及 EOF。
 
-本模块已运行 `go test -count=1 -timeout=60s ./internal/preparation ./cmd/membership-prepare`，8 项 preparation 顶层测试和 4 项 CLI 顶层测试通过（含多个子场景）；`python3 -m unittest discover -s tools/prepayment-desktop -p 'test_*.py' -v` 的 9 项桌面控制器测试通过。这里的 GUI 测试没有拉起真实账号浏览器，桌面外观和真实链路需要各自验收。
+初版曾运行 `go test -count=1 -timeout=60s ./internal/preparation ./cmd/membership-prepare`，8 项 preparation 顶层测试和 4 项 CLI 顶层测试通过（含多个子场景）。诊断版 `20261114.2` 的 `python3 -m unittest discover -s tools/prepayment-desktop -p 'test_*.py' -v` 共 15 项桌面控制器测试通过，其中新增了资格原因展示、嵌套诊断类型白名单、未知不当免费，以及显示／复制／保存均无敏感字段的回归。这里的 GUI 测试没有拉起真实账号浏览器，桌面外观和真实链路需要各自验收。
 
 真实站点访问授权没有因为换 CLI 而自动改变。当前助手没有通过其他驱动访问先前被 host restrictions gate 拒绝的 ChatGPT 目标。用户可在自己的允许环境中自行运行本机入口；这项真实验收的结果应单独记录，不以绿色模拟测试替代。
 
@@ -148,3 +148,44 @@ Zovo 白名单应匹配实际 API 请求的公网出口，不能填本地监听�
 首次 Zovo 请求发生在 `resolving_billing`：会话恢复、结账创建、首次套餐及币种识别已经通过之后。`reviewing_quote` 在填写账单前后都会出现，不能单凭这个阶段名判断是否曾读取卡台。新错误码只保留适配器已识别的固定分类，不透传上游响应、请求 URL 或原始错误字符串。
 
 新浏览器入口没有提交方法，并对已知资金提交端点与原生表单提交安装拦截；若命中提交尝试，报告 `PREPAYMENT_SUBMISSION_BLOCKED` 并撤销 ready。保护安装失败会停止。CLI 与 GUI 的成功条件同时要求 `submissionFenceVerified=true`、`submissionBlocked=false`、`submitActivated=false`。未知第三方私有接口不能仅凭名称证明已被穷尽识别，因此正式站点仍需检查实际页面行为，不能将该工具称作已经完成实盘付款。
+
+## 8. 登录成功却停在首页：账号资格诊断
+
+`cookieReadbackVerified=true`、`identityMatch=true` 表示恢复会话和身份核对已经通过。若随后返回 `PREPAYMENT_ELIGIBILITY_UNCONFIRMED`，且 `stage=opening_checkout`，含义是本工具未能取得它认可的订阅资格证据，不等于平台已确认该账号不能购买 Plus。
+
+旧版本把三种情况合并成这个错误：没有找到账号 ID、旧订阅查询返回非成功 HTTP 状态、响应顶层 `plan_type` 不是已识别的套餐值。因此，仅凭 `20261114.1` 的这条错误不能确定用户真实响应命中了哪一种，也不能认定为 Zovo 白名单问题。
+
+`20261114.2` 将账号资格读取与创建结账拆开。实时读取方案参考了 [Zovo 项目的账号查询实现](https://github.com/7yedeng/zovo_card_cdk_auto/blob/19f41ef347cdb3cce52fde0f2b43e12f70dc6ebe/backend/internal/gptcheck/check.go)，使用 `/backend-api/accounts/check/v4-2023-04-27` 返回的 `accounts`、`account` 和 `entitlement` 结构。具体判定如下：
+
+1. 使用本次刷新得到的实时会话再次核对用户身份；Session 或 JWT 中的账号 ID 只作为绑定线索，JWT 套餐值不作为当前免费资格。
+2. 账号记录必须与绑定账号一致。会话没有账号 ID 时，只能从服务端明确的 `default_account` 及其真实账号 ID 补全；不任取列表中的第一项，不自行切换到其他工作区。
+3. 已知付费套餐或 `has_active_subscription=true` 会停止。明确的免费套餐可以成为免费证据；明确无有效订阅且套餐字段缺失／空时，也可确认未订阅。未知的非空套餐、无效类型、账号冲突或工作区类型不支持均停止。
+4. 只有账号查询明确返回 HTTP 404 或 405，且已经有账号绑定，才允许回退旧订阅接口；该旧接口仍必须明确返回 `plan_type=free`。HTTP 401／403、网络错误或无效响应不会被当作免费。
+5. 资格确认后仅发起一次创建结账请求。请求超时或结果不明不会自动重发，更不会触发付款。
+
+新增诊断示例仅使用固定状态，未包含任何真实账号材料：
+
+```json
+{
+  "code": "PREPAYMENT_ELIGIBILITY_UNCONFIRMED",
+  "stage": "opening_checkout",
+  "checkoutDiagnostic": {
+    "phase": "account_lookup",
+    "reason": "account_http_rejected",
+    "source": "none",
+    "sessionHttpStatus": 200,
+    "accountHttpStatus": 403,
+    "subscriptionHttpStatus": 0,
+    "checkoutHttpStatus": 0,
+    "accountIdPresent": true,
+    "accountBinding": "session",
+    "plan": "unknown",
+    "activeSubscription": "unknown",
+    "checkoutRequested": false
+  }
+}
+```
+
+`checkoutRequested=false` 表示尚未发起创建结账；`true` 只表示请求已经发起，不表示页面已打开、订单已成功创建或款项已经支付。HTTP 值 `0` 表示没有可记录的 HTTP 响应，需结合 `phase` 和 `reason` 判断，不能当成成功。`unknown` 始终显示为“未确认”。
+
+界面、复制按钮与诊断文件都会再次过滤这个对象，只接受固定枚举、严格布尔值以及 `0` 或 `100–599` 的整数状态码。账号 ID、邮箱、访问凭据、原始错误或响应正文、URL 等即使被额外塞进对象，也不会进入显示或持久化结果。账号查询与结账适配的实际可用性仍需用户在允许的环境中运行验证，合成响应回归不代表当前真实接口契约已经验收。
