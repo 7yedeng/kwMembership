@@ -20,6 +20,8 @@ Windows 包中的入口是 `tools/prepayment-desktop/start.cmd`，主程序为 `
 
 默认勾选“显示独立 Chrome”。达到审核状态后，结果会立即显示，浏览器最多保留两分钟用于观察；没有“确认付款”按钮。关闭窗口或点击取消会请求子进程取消，并等待它关闭浏览器，不能把取消后的结果当作正常完成。
 
+**浏览器短暂出现后关闭，不代表已经填表完成。** 两分钟观察只在 `review_ready` 成功后开始；此前任何失败都会立即关闭任务浏览器。诊断版 `20261114.1` 会在结果页保留最终 `stage`，显示固定错误码的解释，并提供“复制脱敏诊断”。每次结束还会覆盖 `tools/prepayment-desktop/logs/last-diagnostic.json`，只保存固定错误码、阶段、校验布尔值、版本和时间，不保存账号指纹、报价、卡片信息、Session 或 API Secret。保存失败时仍可从界面复制。
+
 预算没有默认值：请填入你允许的最终总额范围，税费和折扣也必须来自结账事实。文档和测试中的数字都是合成用例，不代表当前套餐售价。账单国家填写实际发卡资料，不自动改成 PH，也不调用随机地址生成器。
 
 ## 2. CLI 输入与模式
@@ -92,7 +94,7 @@ stderr 仅输出固定的 `PREPARATION_STAGE <阶段>`，不输出原始浏览�
 
 1. 严格解析输入，绑定 Session 的目标邮箱和可用用户 ID。
 2. 创建独立任务 Chrome，调用共享 Session 核心写入 Cookie、精确回读并核验真实账号；后续步骤继续使用这个浏览器。
-3. 检查账号资格，进入明确的 Plus / PH / PHP 结账。已有目标订阅或未能确认套餐时停止。
+3. 检查账号资格，进入明确的 Plus / PH / PHP 结账。已有付费订阅或未能确认套餐时停止。
 4. 需要账单才能计税时，先读取所选 Zovo 卡快照并填写实际账单资料。
 5. 等待实际税费与总额出现，核验套餐、币种、金额算式和用户预算。
 6. 从同一份已缓存快照取得完整卡材料，核对卡片归属、ACTIVE 状态、有效期与已知商户禁用规则，填写卡字段并精确回读。
@@ -126,5 +128,23 @@ stderr 仅输出固定的 `PREPARATION_STAGE <阶段>`，不输出原始浏览�
 本模块已运行 `go test -count=1 -timeout=60s ./internal/preparation ./cmd/membership-prepare`，8 项 preparation 顶层测试和 4 项 CLI 顶层测试通过（含多个子场景）；`python3 -m unittest discover -s tools/prepayment-desktop -p 'test_*.py' -v` 的 9 项桌面控制器测试通过。这里的 GUI 测试没有拉起真实账号浏览器，桌面外观和真实链路需要各自验收。
 
 真实站点访问授权没有因为换 CLI 而自动改变。当前助手没有通过其他驱动访问先前被 host restrictions gate 拒绝的 ChatGPT 目标。用户可在自己的允许环境中自行运行本机入口；这项真实验收的结果应单独记录，不以绿色模拟测试替代。
+
+## 7. 代理、IP 白名单与失败定位
+
+浏览器访问 ChatGPT 与 Go 程序访问 Zovo 是两条独立的网络路径。当前 Chrome 没有显式 `--proxy-server` 覆盖；卡台使用 Go 默认 HTTP 传输器，读取 `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` 及其小写变量，不自动读取 Windows 的“系统代理”注册表开关，也不使用 `ALL_PROXY`。桌面子进程继承 GUI 启动时的环境，工具不会自动修改这些配置。系统 TUN、VPN 或路由仍可能影响最终出口，因此“未配置 HTTPS_PROXY”不能直接等同于“肯定从本机宽带公网 IP 出口”。
+
+Zovo 白名单应匹配实际 API 请求的公网出口，不能填本地监听地址 `127.0.0.1`。浏览器查到的公网地址也不一定是卡台客户端的出口。先核对运行结果，再决定是否需要将已授权的固定出口加入白名单或明确配置卡台客户端路由；不要仅为排障清空白名单。
+
+| 诊断结果 | 能证明什么 |
+| --- | --- |
+| `restoring_session` / `opening_checkout` 等较早阶段失败 | 尚未读取 Zovo 卡片；不能归因于卡台 IP 白名单 |
+| `PREPARATION_CARD_AUTH_FAILED` | 卡台 HTTP 401，鉴权失败 |
+| `PREPARATION_CARD_ACCESS_DENIED` | 卡台 HTTP 403，访问被拒；IP 白名单、应用权限等均需核对，不能仅凭 403 确定原因 |
+| `PREPARATION_CARD_RATE_LIMITED` | 卡台 HTTP 429，限流 |
+| `PREPARATION_CARD_TIMEOUT` | 卡台读取超时，不能据此判断为白名单拒绝 |
+| `PREPARATION_CARD_OPERATION_REJECTED` | 卡台返回非成功业务码；原始文本未进入报告 |
+| `PREPARATION_CARD_UNAVAILABLE` | 网络或其他未能细分的读取失败 |
+
+首次 Zovo 请求发生在 `resolving_billing`：会话恢复、结账创建、首次套餐及币种识别已经通过之后。`reviewing_quote` 在填写账单前后都会出现，不能单凭这个阶段名判断是否曾读取卡台。新错误码只保留适配器已识别的固定分类，不透传上游响应、请求 URL 或原始错误字符串。
 
 新浏览器入口没有提交方法，并对已知资金提交端点与原生表单提交安装拦截；若命中提交尝试，报告 `PREPAYMENT_SUBMISSION_BLOCKED` 并撤销 ready。保护安装失败会停止。CLI 与 GUI 的成功条件同时要求 `submissionFenceVerified=true`、`submissionBlocked=false`、`submitActivated=false`。未知第三方私有接口不能仅凭名称证明已被穷尽识别，因此正式站点仍需检查实际页面行为，不能将该工具称作已经完成实盘付款。

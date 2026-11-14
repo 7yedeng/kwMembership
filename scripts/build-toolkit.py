@@ -76,7 +76,7 @@ def build(target: str, output: Path, go: str) -> Path:
              str(folder / "bin" / (command + suffix)), "./cmd/" + command], env=environment)
     for desktop in ("session-desktop", "prepayment-desktop"):
         shutil.copytree(ROOT / "tools" / desktop, folder / "tools" / desktop,
-                        ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "test_*.py"))
+                        ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "test_*.py", "logs"))
     shutil.copytree(ROOT / "tools" / "userscript", folder / "userscript",
                     ignore=shutil.ignore_patterns("*.zip", "*.test.cjs", "TEST_RESULTS.txt"))
     (folder / "docs").mkdir()

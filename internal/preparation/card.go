@@ -2,6 +2,7 @@ package preparation
 
 import (
 	"context"
+	"errors"
 	"math"
 	"math/big"
 	"net/http"
@@ -70,6 +71,7 @@ func (r *cardResolver) load(ctx context.Context) (*checkout.Material, error) {
 		return nil, r.err
 	}
 	if err != nil {
+		r.err = safeCardReadFailure(err)
 		return nil, r.err
 	}
 	if snapshot.UpstreamCardID != r.input.cardID || !snapshot.CardBindingVerified {
@@ -122,6 +124,29 @@ func (r *cardResolver) load(ctx context.Context) (*checkout.Material, error) {
 		MerchantRestrictionsKnown: snapshot.MerchantRestrictionsKnown}
 	r.err = nil
 	return r.material, nil
+}
+
+// Preserve only reviewed provider classifications. Messages, wrapped causes and
+// unknown codes can contain credentials or private URLs and must not leave the
+// resolver. Access denied includes permission and IP-policy failures; it does
+// not establish that an IP whitelist caused the rejection.
+func safeCardReadFailure(err error) error {
+	var source *provider.Error
+	if errors.As(err, &source) && source != nil {
+		switch source.ErrorCode {
+		case "ZOVOCARD_AUTH_FAILED":
+			return fail("PREPARATION_CARD_AUTH_FAILED")
+		case "ZOVOCARD_ACCESS_DENIED":
+			return fail("PREPARATION_CARD_ACCESS_DENIED")
+		case "ZOVOCARD_RATE_LIMITED":
+			return fail("PREPARATION_CARD_RATE_LIMITED")
+		case "ZOVOCARD_TIMEOUT":
+			return fail("PREPARATION_CARD_TIMEOUT")
+		case "ZOVOCARD_OPERATION_REJECTED":
+			return fail("PREPARATION_CARD_OPERATION_REJECTED")
+		}
+	}
+	return fail("PREPARATION_CARD_UNAVAILABLE")
 }
 
 func mergeBilling(observed provider.BillingAddress, supplied *provider.BillingAddress) (provider.BillingAddress, string, error) {

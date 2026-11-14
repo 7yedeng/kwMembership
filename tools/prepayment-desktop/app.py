@@ -6,21 +6,26 @@ funding command or payment confirmation command is provided.
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 import os
 from pathlib import Path
 import queue
 import re
 import shutil
 import subprocess
+import tempfile
 import threading
 from typing import Any
 
 MAX_INPUT_BYTES = 384 << 10
 MAX_REPORT_BYTES = 32 << 10
+DIAGNOSTIC_VERSION = "20261114.1"
 ALLOWED_CODES = set("""
 PREPARATION_INPUT_CHECKED PREPARATION_FAILED PREPARATION_ARGUMENTS_INVALID
 PREPARATION_INPUT_INVALID PREPARATION_INPUT_TOO_LARGE PREPARATION_CARD_CONFIGURATION_INVALID
 PREPARATION_CARD_UNAVAILABLE PREPARATION_CARD_BINDING_MISMATCH PREPARATION_CARD_INVALID
+PREPARATION_CARD_AUTH_FAILED PREPARATION_CARD_ACCESS_DENIED PREPARATION_CARD_RATE_LIMITED
+PREPARATION_CARD_TIMEOUT PREPARATION_CARD_OPERATION_REJECTED
 PREPARATION_CARD_EXPIRED PREPARATION_CARD_BLOCKED PREPARATION_BILLING_BINDING_MISMATCH
 PREPARATION_BILLING_INVALID PREPARATION_BILLING_CONFLICT PREPARATION_BILLING_INCOMPLETE
 PREPARATION_BALANCE_INSUFFICIENT PREPARATION_REPORT_INVALID PREPARATION_BROWSER_CONFIG_INVALID
@@ -57,6 +62,26 @@ PHASES = {
     "checking_final_state": "正在复查最终金额、字段与确认按钮…",
     "review_ready": "已到付款前审核；本工具不会点击付款。",
     "browser_closed": "浏览器已关闭。",
+}
+STAGE_LABELS = {
+    "input": "校验输入", "input_validated": "本地输入校验通过",
+    "browser_starting": "启动独立浏览器", "restoring_session": "恢复会话并核对账号",
+    "opening_checkout": "建立 Plus 结账", "reviewing_quote": "识别结账与核对报价",
+    "resolving_billing": "读取卡台与实际账单资料", "filling_billing": "填写实际账单",
+    "resolving_card": "核对卡片资料", "filling_fields": "填写并回读卡字段",
+    "checking_final_state": "复查付款前状态", "review_ready": "付款前审核就绪",
+    "browser_closed": "浏览器已关闭",
+}
+ERROR_HINTS = {
+    "PREPARATION_CARD_AUTH_FAILED": "卡台返回 HTTP 401。请核对 App Secret，以及可选 App ID 是否属于同一套应用凭据。",
+    "PREPARATION_CARD_ACCESS_DENIED": "卡台返回 HTTP 403。IP 白名单或 API 权限可能导致拒绝；仅凭 403 还不能确定是哪一种。请核对卡台请求的实际公网出口与白名单。",
+    "PREPARATION_CARD_RATE_LIMITED": "卡台返回 HTTP 429（限流）。本次已停止，没有自动重试或换卡。",
+    "PREPARATION_CARD_TIMEOUT": "读取卡台超时。请检查卡台 API 的网络与代理路由；超时本身不能证明是 IP 白名单拒绝。",
+    "PREPARATION_CARD_OPERATION_REJECTED": "卡台返回业务拒绝。请在卡台后台核对凭据权限和卡片状态；这里不显示原始响应内容。",
+    "PREPARATION_CARD_UNAVAILABLE": "卡台读取未完成，或未返回可识别的错误类别；尚不能据此确定为白名单问题。",
+    "PREPAYMENT_ALREADY_SUBSCRIBED": "此账号已被识别为已有付费订阅，程序在创建新订阅之前停止。",
+    "PREPAYMENT_CHECKOUT_UNAVAILABLE": "未能建立或打开结账；此步骤发生在读取 Zovo 卡片之前。",
+    "PREPAYMENT_FENCE_UNAVAILABLE": "付款拦截保护未能持续确认，程序已停止并清理浏览器。",
 }
 UNCONFIRMED = {
     "card_balance_currency": "卡余额币种未由卡台明确返回",
@@ -138,6 +163,8 @@ def safe_report(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict) or not isinstance(value.get("code"), str) or value["code"] not in ALLOWED_CODES:
         return {"code": "PREPARATION_REPORT_INVALID"}
     result: dict[str, Any] = {"code": value["code"]}
+    if isinstance(value.get("stage"), str) and value["stage"] in STAGE_LABELS:
+        result["stage"] = value["stage"]
     for key in BOOL_FIELDS:
         if type(value.get(key)) is bool:
             result[key] = value[key]
@@ -176,6 +203,38 @@ def safe_report(value: Any) -> dict[str, Any]:
             if key == "missingFacts" and len(result[key]) != len(values):
                 result[key].append("unrecognized")
     return result
+
+
+def diagnostic_report(value: Any, last_phase: str = "") -> dict[str, Any]:
+    """Fixed diagnostic facts only; omit account, quote, card and credential data."""
+    clean = safe_report(value)
+    result = {key: clean[key] for key in ("code", "stage", *BOOL_FIELDS, "fundingActionsTaken") if key in clean}
+    result["diagnosticVersion"] = DIAGNOSTIC_VERSION
+    if isinstance(last_phase, str) and last_phase in PHASES:
+        result["lastProgressStage"] = last_phase
+    return result
+
+
+def save_diagnostic(value: Any, last_phase: str = "", directory: Path | None = None) -> Path:
+    """Persist only the minimal allowlisted result, using an atomic replacement."""
+    report = diagnostic_report(value, last_phase)
+    report["savedAtUTC"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    folder = directory if directory is not None else Path(__file__).resolve().parent / "logs"
+    folder.mkdir(parents=True, exist_ok=True)
+    target = folder / "last-diagnostic.json"
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=folder, prefix=".diagnostic-", delete=False) as stream:
+            temporary = Path(stream.name)
+            json.dump(report, stream, ensure_ascii=True, indent=2)
+            stream.write("\n")
+        os.replace(temporary, target)
+        temporary = None
+        return target
+    finally:
+        if temporary is not None:
+            try: temporary.unlink()
+            except OSError: pass
 
 
 def safe_event(raw: bytes) -> tuple[str, dict[str, Any]]:
@@ -236,6 +295,17 @@ def completion_message(report: dict[str, Any], exit_code: int) -> str:
 
 def review_text(report: dict[str, Any]) -> str:
     lines = ["状态：" + report.get("code", "PREPARATION_REPORT_INVALID")]
+    stage = report.get("stage")
+    if stage in STAGE_LABELS:
+        lines.append("结果阶段：" + STAGE_LABELS[stage] + "（" + stage + "）")
+    hint = ERROR_HINTS.get(report.get("code"))
+    if hint:
+        lines.append(hint)
+    if report.get("readyForConfirmation") is not True and report.get("code") != "PREPARATION_INPUT_CHECKED":
+        if stage in ("input", "input_validated", "browser_starting", "restoring_session", "opening_checkout"):
+            lines.append("该阶段尚未查询 Zovo 卡台；本次停止不能归因于卡台请求被白名单拒绝。")
+        if report.get("browserOpened") and report.get("browserClosed"):
+            lines.append("失败后已立即关闭任务浏览器；两分钟观察仅在成功到达付款前审核后开始。")
     quote = report.get("quote")
     if quote and quote.get("minorUnitScale") == 2:
         money = lambda value: f"{value // 100}.{value % 100:02d}"
@@ -274,12 +344,14 @@ class Application:
         self.events: queue.Queue[tuple[str, Any]] = queue.Queue()
         self.process: subprocess.Popen[bytes] | None = None
         self.running = self.cancel_requested = self.cancel_sent = self.closing = False
+        self.last_phase = ""
+        self.last_diagnostic: dict[str, Any] = {}
         root.title("Anagnoraxis · 付款前准备")
         root.geometry("900x850")
         root.minsize(760, 720)
         outer = ttk.Frame(root, padding=18)
         outer.pack(fill="both", expand=True)
-        ttk.Label(outer, text="Plus 付款前准备", font=("Segoe UI", 18, "bold")).pack(anchor="w")
+        ttk.Label(outer, text="Plus 付款前准备 · 诊断版 " + DIAGNOSTIC_VERSION, font=("Segoe UI", 18, "bold")).pack(anchor="w")
         ttk.Label(outer, text="当前支持 Plus / PH / PHP。恢复登录、查已有卡、填写并核对，停在最终付款之前。", wraplength=820).pack(anchor="w", pady=(6, 12))
         self.binary, self.chrome = tk.StringVar(value=default_binary()), tk.StringVar(value=default_chrome())
         for label, variable in (("程序", self.binary), ("Chrome", self.chrome)):
@@ -318,6 +390,8 @@ class Application:
             ttk.Entry(row, textvariable=variable).pack(side="left", fill="x", expand=True)
         self.result = tk.Text(self.result_tab, wrap="word", state="disabled", undo=False)
         self.result.pack(fill="both", expand=True)
+        self.copy_button = ttk.Button(self.result_tab, text="复制脱敏诊断（不含账号或卡片资料）", command=self.copy_diagnostic, state="disabled")
+        self.copy_button.pack(anchor="w", pady=(8, 0))
         self.show = tk.BooleanVar(value=True)
         ttk.Checkbutton(outer, text="显示独立 Chrome（到审核状态后最多保留 2 分钟，仅用于观察）", variable=self.show).pack(anchor="w")
         row = ttk.Frame(outer); row.pack(fill="x", pady=10)
@@ -349,6 +423,9 @@ class Application:
             self.status.set(str(error)); return
         self.cancel_requested = self.cancel_sent = False
         self.process = None
+        self.last_phase = ""
+        self.last_diagnostic = {}
+        self.copy_button.configure(state="disabled")
         self.set_running(True)
         self.input.delete("1.0", "end")
         self.settings["appSecret"].set("")
@@ -433,6 +510,13 @@ class Application:
         if report: self.result.insert("1.0", review_text(report))
         self.result.configure(state="disabled")
 
+    def copy_diagnostic(self) -> None:
+        if not self.last_diagnostic:
+            return
+        self.root.clipboard_clear()
+        self.root.clipboard_append(json.dumps(self.last_diagnostic, ensure_ascii=False, indent=2))
+        self.status.set("已复制脱敏诊断：只有固定错误码、阶段和校验标志，不含 Session、API Secret、账号、金额或卡片资料。")
+
     def poll(self) -> None:
         while True:
             try: kind, value = self.events.get_nowait()
@@ -441,6 +525,7 @@ class Application:
                 self.process = value
                 if self.cancel_requested: self.send_cancel()
             elif kind == "phase" and self.running and not self.cancel_requested:
+                self.last_phase = value
                 self.status.set(PHASES[value])
             elif kind == "ready" and not self.cancel_requested:
                 self.display(value); self.tabs.select(self.result_tab)
@@ -448,7 +533,15 @@ class Application:
             elif kind == "done":
                 self.set_running(False); self.process = None
                 self.display(value["report"]); self.tabs.select(self.result_tab)
-                self.status.set(completion_message(value["report"], value["exitCode"]))
+                self.last_diagnostic = diagnostic_report(value["report"], self.last_phase)
+                self.copy_button.configure(state="normal")
+                message = completion_message(value["report"], value["exitCode"])
+                try:
+                    save_diagnostic(value["report"], self.last_phase)
+                    message += " 脱敏诊断已保存在本工具 logs/last-diagnostic.json。"
+                except OSError:
+                    message += " 诊断文件未能保存；仍可用上方按钮复制脱敏诊断。"
+                self.status.set(message)
                 if self.closing: self.root.destroy(); return
         self.root.after(100, self.poll)
 

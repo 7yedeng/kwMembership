@@ -100,6 +100,52 @@ class DesktopContractTests(unittest.TestCase):
         self.assertEqual(app.safe_report({"code": "PREPARATION_SECRETKEYVALUE"}), {"code": "PREPARATION_REPORT_INVALID"})
         self.assertEqual(app.safe_event(b"raw credential"), ("invalid", {"code": "PREPARATION_REPORT_INVALID"}))
 
+    def test_failure_preserves_stage_and_does_not_claim_a_whitelist_diagnosis(self):
+        report = app.safe_report({"code": "PREPARATION_CARD_ACCESS_DENIED", "stage": "resolving_billing",
+                                  "browserOpened": True, "browserClosed": True, "raw": "synthetic-api-secret"})
+        self.assertEqual(report["stage"], "resolving_billing")
+        text = app.review_text(report)
+        self.assertIn("HTTP 403", text)
+        self.assertIn("不能确定", text)
+        self.assertIn("失败后已立即关闭", text)
+        self.assertNotIn("尚未查询 Zovo", text)
+        self.assertNotIn("synthetic-api-secret", text)
+        early = app.safe_report({"code": "SESSION_NOT_LOGGED_IN", "stage": "restoring_session"})
+        self.assertIn("尚未查询 Zovo", app.review_text(early))
+        unknown = app.safe_report({"code": "PREPARATION_CARD_UNAVAILABLE", "stage": "synthetic-api-secret"})
+        self.assertNotIn("stage", unknown)
+        for suffix in ("AUTH_FAILED", "ACCESS_DENIED", "RATE_LIMITED", "TIMEOUT", "OPERATION_REJECTED"):
+            code = "PREPARATION_CARD_" + suffix
+            self.assertEqual(app.safe_report({"code": code})["code"], code)
+
+    def test_saved_diagnostic_excludes_account_card_quote_and_credentials(self):
+        report = ready_report()
+        report.update({"stage": "browser_closed", "session": "synthetic-session-secret", "appSecret": "synthetic-api-secret"})
+        with tempfile.TemporaryDirectory() as directory:
+            target = app.save_diagnostic(report, "review_ready", Path(directory))
+            saved = json.loads(target.read_text(encoding="utf-8"))
+            self.assertEqual(saved["stage"], "browser_closed")
+            self.assertEqual(saved["lastProgressStage"], "review_ready")
+            self.assertEqual(saved["fundingActionsTaken"], 0)
+            self.assertIn("savedAtUTC", saved)
+            for key in ("targetFingerprint", "card", "quote", "session", "appSecret"):
+                self.assertNotIn(key, saved)
+            for marker in ("synthetic-", "0123456789abcdef", "4242", "98214"):
+                self.assertNotIn(marker, json.dumps(saved))
+            self.assertEqual([item.name for item in Path(directory).iterdir()], ["last-diagnostic.json"])
+        self.assertNotIn("lastProgressStage", app.diagnostic_report(report, "synthetic-api-secret"))
+
+    def test_diagnostic_write_failure_keeps_previous_result(self):
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            target = app.save_diagnostic({"code": "SESSION_NOT_LOGGED_IN", "stage": "restoring_session"}, directory=folder)
+            before = target.read_bytes()
+            with patch.object(app.os, "replace", side_effect=OSError("write denied")):
+                with self.assertRaises(OSError):
+                    app.save_diagnostic(ready_report(), directory=folder)
+            self.assertEqual(target.read_bytes(), before)
+            self.assertEqual([item.name for item in folder.iterdir()], ["last-diagnostic.json"])
+
     def test_unknown_balance_currency_remains_explicitly_unconfirmed(self):
         report = app.safe_report(ready_report())
         self.assertTrue(app.review_complete(report, final=True))
