@@ -1,0 +1,3 @@
+go: downloading modernc.org/sqlite v1.54.0
+go: downloading github.com/chromedp/cdproto v0.0.0-20260714215040-dc233986426f
+go: downloading github.com/chromedp/chromedp v0.16.0

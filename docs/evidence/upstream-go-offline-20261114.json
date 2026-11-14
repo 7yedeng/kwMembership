@@ -1,0 +1,59 @@
+{
+  "source_repository": "https://github.com/varrge/kwMembership",
+  "source_commit": "16ceb97fc15f629c8b59df242e1baee2227e4c77",
+  "platform": "linux/amd64",
+  "go_version": "go version go1.26.11 linux/amd64",
+  "command": [
+    "go",
+    "test",
+    "-count=1",
+    "-json",
+    "./..."
+  ],
+  "environment": {
+    "GOTOOLCHAIN": "local",
+    "GOPROXY": "off"
+  },
+  "exit_code": 1,
+  "elapsed_seconds": 10.243,
+  "top_level_test_passes": 52,
+  "all_test_passes": 124,
+  "test_failures": 0,
+  "skipped_tests": 0,
+  "packages_passed": 4,
+  "packages_failed_setup": [
+    "kwmembership/cmd/membership-worker",
+    "kwmembership/internal/checkout",
+    "kwmembership/internal/executor",
+    "kwmembership/internal/processor",
+    "kwmembership/internal/store"
+  ],
+  "source_worktree_clean": true,
+  "verification_status": "partially_passed_dependency_blocked",
+  "blocker": "The four packages whose dependencies are available completed their tests; five packages could not compile because the pinned chromedp/sqlite modules are not cached. GOPROXY=off prevented dependency downloads. No test assertion failures were observed, but the complete suite did not pass.",
+  "logs": {
+    "stdout": "go-test.jsonl",
+    "stderr": "go-test.stderr.log"
+  },
+  "stderr_sha256": "9938b98347ee6caca1e2fa12be8d1b77c9b8885cd2750ef3d6231d97b568b457",
+  "passed_package_names": [
+    "kwmembership/internal/domain",
+    "kwmembership/internal/config",
+    "kwmembership/internal/secure",
+    "kwmembership/internal/provider"
+  ],
+  "top_level_passes_by_package": {
+    "kwmembership/internal/domain": 17,
+    "kwmembership/internal/config": 8,
+    "kwmembership/internal/secure": 2,
+    "kwmembership/internal/provider": 25
+  },
+  "setup_errors": [
+    "internal/checkout/chrome.go:14:2: module lookup disabled by GOPROXY=off",
+    "internal/checkout/chrome.go:15:2: module lookup disabled by GOPROXY=off",
+    "internal/checkout/chrome.go:16:2: module lookup disabled by GOPROXY=off",
+    "internal/checkout/chrome.go:17:2: module lookup disabled by GOPROXY=off",
+    "internal/checkout/chrome.go:18:2: module lookup disabled by GOPROXY=off",
+    "internal/store/store.go:11:2: module lookup disabled by GOPROXY=off"
+  ]
+}

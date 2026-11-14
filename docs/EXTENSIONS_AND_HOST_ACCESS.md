@@ -29,6 +29,24 @@
 
 这些是其他用户的第一手报告，不是维护者对本会话的诊断，也没有证明本账号收到的实际动态配置。当前不能断言“改允许列表一定能解决”，也不能给出已经验证有效的关闭开关。若常规设置已经允许，可通过应用 `/feedback` 附上错误、应用和扩展版本及对话标识，引用此 issue；不需要附上 Session 或 Cookie。
 
+### 2026-11-14：本机已安装扩展的静态证据
+
+本轮只读检查了用户 Chrome、Edge 已安装的官方扩展文件；两者 ID 均为 `hehggadaopoacecdllhhajmbjkdcmajg`，版本均为 `1.26.1102.11740`。仅读取 manifest、background 和 kernel JavaScript，未读取浏览器存储、Cookie、有效远程配置或页面内容，未修改扩展与权限。文件哈希和匹配项见 [本机静态核验](evidence/browser-host-static-20261114.json)。
+
+这次不再只依靠公开 issue 的用户调查，安装代码内已直接找到以下路径：
+
+| 层 | 本机代码行为 |
+| --- | --- |
+| Browser service `gateProviders.hostUrl` | 调用 `runtime.assertBrowserUrlAllowed(url)`；捕获下层异常并包装为 `hostUrl / browser_navigation_blocked / The browser host blocked this URL.` |
+| Extension runtime | `assertBrowserUrlAllowed` 调用 ChatGPT URL 检查函数，取得 `getChatGptAccessPolicy()` 返回的策略；不允许的页面可抛出 `The standalone Chrome extension cannot access this ChatGPT page.` |
+| Extension background | 读取动态配置 `browser-extension-chatgpt-access`，返回 `allow_all_chatgpt_pages` 和 `allowed_pages`；源码默认值为 false 和安装完成页例外；配置读取异常会被捕获 |
+
+因此，该错误生成路径位于 ChatGPT 浏览器控制运行端及扩展的 URL 权限检查链路。它不是目标付款服务器返回的 HTTP 错误，不能用来断定 Playwright 不兼容、Session 失效或银行卡有问题。普通网站许可与这一项检查分别存在，单改 Always allow 未必解除它。
+
+**未确认的仍是本次拒绝具体命中的分支。** 静态源码没有测量账号有效配置，也没有现场异常栈；`hostUrl` 又会统一包装下层异常。因此，明确策略拒绝、配置读取失败后使用默认值、其他检查异常之间，当前无法作出确定选择。不能声称已找到对本例生效的关闭开关，也不能通过修改扩展、策略值或切换驱动来把已拒绝的页面动作当成已获准。
+
+此次环境工作继续使用公开上游源码、离线单元测试和 `about:blank` 浏览器启动检查；没有重新尝试真实 ChatGPT 页面。原版部署结果见 [上游复刻记录](UPSTREAM_REPLICATION.md)。
+
 ## 2. ZovoCard 官方页面确实提供浏览器插件
 
 本轮通过已连接的本机浏览器读取了 [ZovoCard 工具页](https://zovocard.com/gpt-tool)，进入“浏览器插件”选项。官方页面显示：
