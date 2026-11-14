@@ -206,6 +206,58 @@ class DesktopContractTests(unittest.TestCase):
         self.assertNotIn("套餐分类：免费", text)
         self.assertNotIn("创建结账请求：已发起", text)
 
+    def test_alias_conflict_is_distinct_from_ambiguous_mapping_and_http_failure(self):
+        report = eligibility_failure_report()
+        report["checkoutDiagnostic"].update({"reason": "account_alias_conflict", "accountHttpStatus": 200,
+                                             "source": "account_entitlement", "accountBinding": "matched"})
+        event, clean = app.safe_event(json.dumps({"event": "result", "report": report}).encode())
+        self.assertEqual(event, "result")
+        self.assertEqual(clean["checkoutDiagnostic"], report["checkoutDiagnostic"])
+        text = app.review_text(clean)
+        self.assertIn("同一账号多个索引中的明确套餐或订阅状态不一致", text)
+        self.assertIn("账号查询 HTTP：200", text)
+        self.assertIn("套餐分类：未确认", text)
+        self.assertIn("有效订阅：未确认", text)
+        self.assertIn("创建结账请求：尚未发起", text)
+        self.assertIn("尚未查询 Zovo", text)
+        self.assertFalse(app.review_complete(clean, final=True))
+        for unsupported in ("返回非成功状态", "套餐分类：免费", "已有付费套餐或有效订阅", "创建结账请求：已发起"):
+            self.assertNotIn(unsupported, text)
+        report["checkoutDiagnostic"]["reason"] = "account_ambiguous"
+        old_text = app.review_text(report)
+        self.assertIn("多个索引本身不代表多个账号", old_text)
+        self.assertIn("没有自行切换工作区", old_text)
+        self.assertNotIn("明确套餐或订阅状态不一致", old_text)
+
+    def test_alias_diagnostics_keep_original_twelve_fields_in_display_copy_and_file(self):
+        report = eligibility_failure_report()
+        diagnostic = report["checkoutDiagnostic"]
+        original_fields = set(diagnostic)
+        private = "synthetic-private-alias-material"
+        diagnostic.update({"reason": "account_alias_conflict", "accountHttpStatus": 200,
+                           "aliases": [{"key": private, "account": {"account_id": private},
+                                        "entitlement": {"raw": private}}],
+                           "accountIds": [private], "conflictingPlans": [private], "aliasCount": 2,
+                           "defaultAccount": private, "rawResponse": private})
+        clean = app.diagnostic_report(report, "opening_checkout")
+        self.assertEqual(len(original_fields), 12)
+        self.assertEqual(set(clean["checkoutDiagnostic"]), original_fields)
+        self.assertEqual(clean["checkoutDiagnostic"]["reason"], "account_alias_conflict")
+        self.assertEqual(clean["diagnosticVersion"], "20261114.3")
+        writes = []
+        application = app.Application.__new__(app.Application)
+        application.last_diagnostic = clean
+        application.root = SimpleNamespace(clipboard_clear=lambda: writes.clear(), clipboard_append=writes.append)
+        application.status = SimpleNamespace(set=lambda value: None)
+        application.copy_diagnostic()
+        with tempfile.TemporaryDirectory() as directory:
+            saved = app.save_diagnostic(report, "opening_checkout", Path(directory)).read_text(encoding="utf-8")
+        for serialized in (writes[0], saved):
+            self.assertEqual(json.loads(serialized)["checkoutDiagnostic"], clean["checkoutDiagnostic"])
+        for output in (app.review_text(report), writes[0], saved):
+            for forbidden in (private, '"aliases"', '"accountIds"', '"conflictingPlans"', '"aliasCount"', '"defaultAccount"', '"rawResponse"'):
+                self.assertNotIn(forbidden, output)
+
     def test_nested_checkout_diagnostic_stays_private_in_render_copy_and_saved_file(self):
         report = eligibility_failure_report()
         private = "synthetic-private-checkout-value"
@@ -213,7 +265,7 @@ class DesktopContractTests(unittest.TestCase):
                                              "url": "https://private.invalid/" + private, "body": {"secret": private}})
         report.update({"session": private, "appSecret": private, "targetFingerprint": "0123456789abcdef"})
         diagnostic = app.diagnostic_report(report, "opening_checkout")
-        self.assertEqual(diagnostic["diagnosticVersion"], "20261114.2")
+        self.assertEqual(diagnostic["diagnosticVersion"], "20261114.3")
         self.assertEqual(diagnostic["checkoutDiagnostic"]["reason"], "account_http_rejected")
         rendered = app.review_text(report)
         writes = []

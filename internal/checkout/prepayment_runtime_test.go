@@ -245,9 +245,9 @@ document.addEventListener('input',e=>{if(variant===1&&e.target.name==='number')e
 		case r.Method == "GET" && r.URL.Path == "/backend-api/accounts/check/v4-2023-04-27":
 			accountReads.Add(1)
 			w.Header().Set("Content-Type", "application/json")
-			// An explicit inactive entitlement, without a plan_type, is the
-			// compatibility case the previous subscription-only guard missed.
-			fmt.Fprint(w, `{"default_account":"default","accounts":{"default":{"account":{"account_id":"fixture-account","user_id":"synthetic-user","structure":"personal"},"entitlement":{"has_active_subscription":false}}}}`)
+			// Exercise different compatible aliases for one bound account in
+			// every fresh browser, including optional facts split across aliases.
+			fmt.Fprint(w, prepaymentAccountFixture(int(variant.Load())))
 		case r.Method == "POST" && r.URL.Path == "/backend-api/payments/checkout":
 			var body struct {
 				Plan    string                             `json:"plan_name"`
@@ -345,6 +345,27 @@ document.addEventListener('input',e=>{if(variant===1&&e.target.name==='number')e
 }
 
 func strconvQuote(value string) string { encoded, _ := json.Marshal(value); return string(encoded) }
+
+func prepaymentAccountFixture(variant int) string {
+	const inactive = `{"account":{"account_id":"fixture-account","user_id":"synthetic-user","structure":"personal"},"entitlement":{"has_active_subscription":false}}`
+	const sparse = `{"account":{"id":"fixture-account"}}`
+	const free = `{"account":{"account_id":"fixture-account","plan_type":"free","structure":"personal"}}`
+	const team = `{"account":{"account_id":"unselected-team","plan_type":"team","structure":"team"},"entitlement":{"has_active_subscription":true}}`
+	switch variant {
+	case 1:
+		return fmt.Sprintf(`{"default_account":"fixture-account","accounts":{"fixture-account":%s,"default":%s}}`, inactive, inactive)
+	case 2:
+		return fmt.Sprintf(`{"default_account":"default","accounts":{"default":%s,"fixture-account":%s}}`, sparse, inactive)
+	case 3:
+		return fmt.Sprintf(`{"default_account":"default","accounts":{"default":%s,"fixture-account":%s}}`, free, inactive)
+	case 4:
+		return fmt.Sprintf(`{"default_account":"default","accounts":{"team-default":%s,"default":%s,"unselected-team":%s,"fixture-account":%s}}`, team, inactive, team, inactive)
+	case 5:
+		return fmt.Sprintf(`{"default_account":"default","accounts":{"default":%s,"fixture-account":%s,"display-alias":{"account":{"account_id":"fixture-account","plan_type":" FREE ","structure":" Personal ","display_name":"Different label"}}}}`, free, inactive)
+	default:
+		return fmt.Sprintf(`{"default_account":"default","accounts":{"default":%s,"fixture-account":%s}}`, inactive, inactive)
+	}
+}
 
 func prepaymentCheckoutFixture(cardURL, foreignURL string, variant int) string {
 	return `<!doctype html><html><head><style>body{font:16px sans-serif}form{display:block}label{display:block}input,select{height:24px}iframe{width:450px;height:140px}.row{display:flex;gap:24px}</style></head><body>

@@ -19,7 +19,7 @@ from typing import Any
 
 MAX_INPUT_BYTES = 384 << 10
 MAX_REPORT_BYTES = 32 << 10
-DIAGNOSTIC_VERSION = "20261114.2"
+DIAGNOSTIC_VERSION = "20261114.3"
 ALLOWED_CODES = set("""
 PREPARATION_INPUT_CHECKED PREPARATION_FAILED PREPARATION_ARGUMENTS_INVALID
 PREPARATION_INPUT_INVALID PREPARATION_INPUT_TOO_LARGE PREPARATION_CARD_CONFIGURATION_INVALID
@@ -114,7 +114,8 @@ CHECKOUT_REASON_HINTS = {
     "account_response_invalid": "实时账号响应不符合已支持的结构",
     "account_default_invalid": "服务端默认账号指向的记录无法确认",
     "account_not_found": "实时账号响应中没有找到已绑定的目标账号",
-    "account_ambiguous": "账号记录存在歧义，程序没有自行选择其他账号",
+    "account_ambiguous": "账号记录尚未可靠确定；多个索引本身不代表多个账号，程序没有自行切换工作区",
+    "account_alias_conflict": "同一账号多个索引中的明确套餐或订阅状态不一致，无法合并，程序已停止",
     "account_identity_mismatch": "实时账号记录与本次绑定的身份不一致",
     "workspace_unsupported": "当前账号属于本入口不支持的工作区类型",
     "entitlement_invalid": "订阅权益或有效状态字段不符合已支持的结构",

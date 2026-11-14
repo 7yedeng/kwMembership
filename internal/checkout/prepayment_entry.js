@@ -132,17 +132,18 @@
       const entries = Object.entries(data.accounts);
       if (entries.length === 0 || entries.length > 128) return result('eligibility_unconfirmed', 'account_response_invalid');
       const records = [];
-      const seen = new Set();
+      const groups = new Map();
       for (const [key, value] of entries) {
         if (!object(value) || !object(value.account)) return result('eligibility_unconfirmed', 'account_response_invalid');
         const recordIDs = ids([value.account.account_id, value.account.id]);
         if (recordIDs.invalid || recordIDs.values.length === 0) return result('eligibility_unconfirmed', 'account_response_invalid');
         if (recordIDs.values.length > 1) return result('identity_changed', 'account_identity_mismatch');
         const id = recordIDs.values[0];
-        if (seen.has(id)) return result('eligibility_unconfirmed', 'account_ambiguous');
-        seen.add(id);
         if (accountID && key === accountID && id !== accountID) return result('identity_changed', 'account_identity_mismatch');
-        records.push({key, id, value});
+        const record = {key, id, value};
+        records.push(record);
+        if (!groups.has(id)) groups.set(id, []);
+        groups.get(id).push(record);
       }
       let defaultKey = '';
       if (has(data, 'default_account') && data.default_account != null) {
@@ -154,42 +155,65 @@
       if (accountID && defaultRecord && defaultRecord.id !== accountID) return result('identity_changed', 'account_identity_mismatch');
       let selected;
       if (accountID) {
-        selected = records.find(record => record.id === accountID);
+        selected = groups.get(accountID);
         if (!selected) return result('eligibility_unconfirmed', 'account_not_found');
         diagnostic.accountBinding = 'matched';
       } else {
         if (!defaultRecord) return result('eligibility_unconfirmed', 'account_binding_missing');
-        selected = defaultRecord;
-        accountID = selected.id;
+        accountID = defaultRecord.id;
+        selected = groups.get(accountID);
         diagnostic.accountIdPresent = true;
         diagnostic.accountBinding = 'default';
       }
-      const account = selected.value.account;
       diagnostic.source = 'account_entitlement';
-      if (account.structure != null && normalize(account.structure) !== 'personal') {
-        return result('eligibility_unconfirmed', 'workspace_unsupported');
-      }
-      const userBinding = ids([
-        account.user_id, account.userId, account.user?.id,
-        selected.value.user_id, selected.value.userId, selected.value.user?.id
-      ]);
       const expectedUser = typeof session.user.id === 'string' ? session.user.id : '';
-      if (userBinding.invalid || userBinding.values.length > 1 ||
-          userBinding.values.length === 1 && (!expectedUser || userBinding.values[0] !== expectedUser)) {
-        return result('identity_changed', 'account_identity_mismatch');
+      const plans = new Set();
+      const activeFacts = new Set();
+      let identityInvalid = false;
+      let workspaceUnsupported = false;
+      let entitlementInvalid = false;
+      let planUnknown = false;
+      // A response may index the same real account by "default" and by ID.
+      // Combine every selected alias's safety facts; display metadata is not
+      // part of identity or eligibility, and missing facts are never false.
+      for (const record of selected) {
+        const account = record.value.account;
+        if (account.structure != null && normalize(account.structure) !== 'personal') workspaceUnsupported = true;
+        const userBinding = ids([
+          account.user_id, account.userId, account.user?.id,
+          record.value.user_id, record.value.userId, record.value.user?.id
+        ]);
+        if (userBinding.invalid || userBinding.values.length > 1 ||
+            userBinding.values.length === 1 && (!expectedUser || userBinding.values[0] !== expectedUser)) {
+          identityInvalid = true;
+        }
+        if (record.value.entitlement != null && !object(record.value.entitlement)) {
+          entitlementInvalid = true;
+        } else {
+          const entitlement = record.value.entitlement || {};
+          if (has(entitlement, 'has_active_subscription')) {
+            if (typeof entitlement.has_active_subscription !== 'boolean') entitlementInvalid = true;
+            else activeFacts.add(entitlement.has_active_subscription);
+          }
+        }
+        const rawPlan = account.plan_type;
+        if (rawPlan != null && typeof rawPlan !== 'string') planUnknown = true;
+        else {
+          const plan = normalize(rawPlan);
+          if (plan) {
+            if (plan !== 'free' && !paidPlans.has(plan)) planUnknown = true;
+            else plans.add(plan);
+          }
+        }
       }
-      if (selected.value.entitlement != null && !object(selected.value.entitlement)) {
-        return result('eligibility_unconfirmed', 'entitlement_invalid');
-      }
-      const entitlement = selected.value.entitlement || {};
-      if (has(entitlement, 'has_active_subscription') && typeof entitlement.has_active_subscription !== 'boolean') {
-        return result('eligibility_unconfirmed', 'entitlement_invalid');
-      }
-      const active = entitlement.has_active_subscription;
+      if (identityInvalid) return result('identity_changed', 'account_identity_mismatch');
+      if (workspaceUnsupported) return result('eligibility_unconfirmed', 'workspace_unsupported');
+      if (entitlementInvalid) return result('eligibility_unconfirmed', 'entitlement_invalid');
+      if (planUnknown) return result('eligibility_unconfirmed', 'plan_unknown');
+      if (plans.size > 1 || activeFacts.size > 1) return result('eligibility_unconfirmed', 'account_alias_conflict');
+      const plan = plans.values().next().value || '';
+      const active = activeFacts.values().next().value;
       diagnostic.activeSubscription = active === true ? 'true' : active === false ? 'false' : 'unknown';
-      const rawPlan = account.plan_type;
-      if (rawPlan != null && typeof rawPlan !== 'string') return result('eligibility_unconfirmed', 'plan_unknown');
-      const plan = normalize(rawPlan);
       if (paidPlans.has(plan) || active === true) {
         diagnostic.plan = 'paid';
         return result('already_subscribed', 'already_subscribed');

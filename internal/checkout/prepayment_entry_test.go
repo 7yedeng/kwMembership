@@ -85,21 +85,28 @@ func (fake *diagnosticPrepaymentFake) CheckoutDiagnostic() *CheckoutDiagnostic {
 }
 
 func TestEligibilityFailureRetainsDiagnosisBeforeAnyCardLookup(t *testing.T) {
-	request, fake := prepaymentFixture(t)
-	fake.openErr = prepaymentFail("PREPAYMENT_ELIGIBILITY_UNCONFIRMED")
-	reads := 0
-	request.Material = nil
-	request.ResolveBilling = func(context.Context) (*BillingAddress, error) { reads++; return nil, nil }
-	request.ResolveMaterial = func(context.Context, ReviewedQuote) (*Material, error) { reads++; return nil, nil }
-	driver := &diagnosticPrepaymentFake{prepaymentFake: fake, diagnostic: &CheckoutDiagnostic{
-		Phase: "account_lookup", Reason: "account_http_rejected", Source: "none",
-		SessionHTTPStatus: 200, AccountHTTPStatus: 403, AccountIDPresent: true, AccountBinding: "session", Plan: "unknown", ActiveSubscription: "unknown"}}
-	report, err := runPrepayment(context.Background(), request, time.Second, func(context.Context) (prepaymentDriver, error) { return driver, nil })
-	if err == nil || report.Code != "PREPAYMENT_ELIGIBILITY_UNCONFIRMED" || report.Stage != "opening_checkout" ||
-		report.CheckoutDiagnostic == nil || report.CheckoutDiagnostic.Reason != "account_http_rejected" ||
-		report.CheckoutDiagnostic.AccountHTTPStatus != 403 || report.CheckoutDiagnostic.CheckoutRequested ||
-		reads != 0 || !report.CookieReadbackVerified || !report.IdentityMatch || !report.BrowserClosed || report.ReadyForConfirmation ||
-		!reflect.DeepEqual(fake.steps, []string{"restore", "open", "close"}) {
-		t.Fatalf("eligibility failure advanced or lost safe facts: %+v", report)
+	for _, scenario := range []struct {
+		reason string
+		status int
+	}{{"account_http_rejected", 403}, {"account_alias_conflict", 200}} {
+		t.Run(scenario.reason, func(t *testing.T) {
+			request, fake := prepaymentFixture(t)
+			fake.openErr = prepaymentFail("PREPAYMENT_ELIGIBILITY_UNCONFIRMED")
+			reads := 0
+			request.Material = nil
+			request.ResolveBilling = func(context.Context) (*BillingAddress, error) { reads++; return nil, nil }
+			request.ResolveMaterial = func(context.Context, ReviewedQuote) (*Material, error) { reads++; return nil, nil }
+			driver := &diagnosticPrepaymentFake{prepaymentFake: fake, diagnostic: &CheckoutDiagnostic{
+				Phase: "account_lookup", Reason: scenario.reason, Source: "none",
+				SessionHTTPStatus: 200, AccountHTTPStatus: scenario.status, AccountIDPresent: true, AccountBinding: "session", Plan: "unknown", ActiveSubscription: "unknown"}}
+			report, err := runPrepayment(context.Background(), request, time.Second, func(context.Context) (prepaymentDriver, error) { return driver, nil })
+			if err == nil || report.Code != "PREPAYMENT_ELIGIBILITY_UNCONFIRMED" || report.Stage != "opening_checkout" ||
+				report.CheckoutDiagnostic == nil || report.CheckoutDiagnostic.Reason != scenario.reason ||
+				report.CheckoutDiagnostic.AccountHTTPStatus != scenario.status || report.CheckoutDiagnostic.CheckoutRequested ||
+				reads != 0 || !report.CookieReadbackVerified || !report.IdentityMatch || !report.BrowserClosed || report.ReadyForConfirmation ||
+				!reflect.DeepEqual(fake.steps, []string{"restore", "open", "close"}) {
+				t.Fatalf("eligibility failure advanced or lost safe facts: %+v", report)
+			}
+		})
 	}
 }

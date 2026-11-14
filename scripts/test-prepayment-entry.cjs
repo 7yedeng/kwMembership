@@ -27,6 +27,10 @@ function accountData(value = record()) {
   return {default_account: 'personal', accounts: {personal: value}};
 }
 
+function aliasData(entries, defaultKey = 'default') {
+  return {default_account: defaultKey, accounts: Object.fromEntries(entries)};
+}
+
 function token(claims) {
   return 'synthetic.' + Buffer.from(JSON.stringify(claims)).toString('base64url') + '.not-a-valid-signature';
 }
@@ -196,8 +200,138 @@ test('default workspace differing from session binding is rejected', async () =>
   stopped(await run({accounts}), 'account_identity_mismatch', 'identity_changed');
 });
 
-test('duplicate real account identifiers are ambiguous', async () => {
-  stopped(await run({accounts: {default_account: 'personal', accounts: {personal: record(), duplicate: record()}}}), 'account_ambiguous');
+test('default and real-ID indexes for one account create checkout only once', async () => {
+  const out = await run({accounts: aliasData([['default', record()], [accountID, record()]])});
+  assert.equal(out.result.errorKind, '');
+  assert.equal(out.diagnostic.accountBinding, 'matched');
+  assert.equal(out.diagnostic.plan, 'free');
+  assert.equal(out.diagnostic.activeSubscription, 'false');
+  assert.equal(out.calls.checkout, 1);
+});
+
+test('multiple aliases are order independent and ignore display metadata', async () => {
+  const entries = [
+    ['default', {...record({name: 'Display One'}), display_name: 'First private label'}],
+    [accountID, {...record({name: 'Display Two'}), display_name: 'Different private label', locale: 'zh-CN'}],
+    ['personal', {...record({plan_type: ' FREE ', structure: ' Personal '}), arbitrary_display: {active: true}}]
+  ];
+  let previous;
+  for (const ordered of [entries, [...entries].reverse(), [entries[1], entries[0], entries[2]]]) {
+    const out = await run({accounts: aliasData(ordered)});
+    assert.equal(out.calls.checkout, 1);
+    assert.equal(out.result.errorKind, '');
+    if (previous) assert.deepEqual(out.diagnostic, previous);
+    previous = out.diagnostic;
+  }
+});
+
+test('default account without session binding merges all aliases of its real ID', async () => {
+  const partial = record({plan_type: undefined}, {});
+  const out = await run({
+    session: {user: {id: userID, email}, accessToken: secret},
+    accounts: aliasData([['default', partial], [accountID, record()], ['personal', record()]])
+  });
+  assert.equal(out.calls.checkout, 1);
+  assert.equal(out.diagnostic.accountBinding, 'default');
+  assert.equal(out.diagnostic.accountIdPresent, true);
+  assert.equal(out.diagnostic.plan, 'free');
+});
+
+test('optional facts missing in one alias can be completed by another', async () => {
+  const incomplete = record({plan_type: undefined, structure: null, user_id: undefined}, null);
+  const complete = record();
+  for (const entries of [[['default', incomplete], [accountID, complete]], [['default', complete], [accountID, incomplete]]]) {
+    const out = await run({accounts: aliasData(entries)});
+    assert.equal(out.result.errorKind, '');
+    assert.equal(out.calls.checkout, 1);
+    assert.equal(out.diagnostic.activeSubscription, 'false');
+  }
+});
+
+test('compatible free and inactive facts may come from separate aliases', async () => {
+  const out = await run({accounts: aliasData([
+    ['default', record({}, {})], [accountID, record({plan_type: undefined})]
+  ])});
+  assert.equal(out.calls.checkout, 1);
+  assert.equal(out.diagnostic.plan, 'free');
+  assert.equal(out.diagnostic.activeSubscription, 'false');
+});
+
+test('several aliases lacking positive eligibility evidence remain unknown', async () => {
+  stopped(await run({accounts: aliasData([
+    ['default', record({plan_type: undefined}, {})], [accountID, record({plan_type: null}, null)]
+  ])}), 'plan_unknown');
+});
+
+test('opposite explicit active facts conflict regardless of alias order', async () => {
+  const inactive = record();
+  const active = record({}, {has_active_subscription: true});
+  for (const [a, b] of [[inactive, active], [active, inactive]]) {
+    stopped(await run({accounts: aliasData([['default', a], [accountID, b]])}), 'account_alias_conflict');
+  }
+});
+
+test('different explicit plans conflict regardless of alias order', async () => {
+  for (const plans of [['free', 'plus'], ['plus', 'free'], ['plus', 'pro'], ['pro', 'plus']]) {
+    stopped(await run({accounts: aliasData([
+      ['default', record({plan_type: plans[0]}, {})], [accountID, record({plan_type: plans[1]}, {})]
+    ])}), 'account_alias_conflict');
+  }
+});
+
+test('any selected alias with a foreign user blocks the whole account group', async () => {
+  const absent = record({user_id: undefined});
+  const foreign = record({user_id: 'synthetic-other-user'});
+  for (const [a, b] of [[absent, foreign], [foreign, absent]]) {
+    stopped(await run({accounts: aliasData([['default', a], [accountID, b]])}), 'account_identity_mismatch', 'identity_changed');
+  }
+});
+
+test('unknown or invalid plan in any selected alias is not hidden by an inactive alias', async () => {
+  for (const plan of ['future-plan', 0, []]) {
+    const inactive = record({plan_type: undefined});
+    const unknown = record({plan_type: plan}, {});
+    for (const [a, b] of [[inactive, unknown], [unknown, inactive]]) {
+      stopped(await run({accounts: aliasData([['default', a], [accountID, b]])}), 'plan_unknown');
+    }
+  }
+});
+
+test('invalid active facts or nonpersonal structure in any alias remain blockers', async () => {
+  for (const invalid of [record({}, {has_active_subscription: 'false'}), record({}, false)]) {
+    stopped(await run({accounts: aliasData([['default', record()], [accountID, invalid]])}), 'entitlement_invalid');
+  }
+  for (const structure of ['team', '', false]) {
+    stopped(await run({accounts: aliasData([['default', record()], [accountID, record({structure})]])}), 'workspace_unsupported');
+  }
+});
+
+test('duplicate indexes of an unrelated workspace do not prevent target selection', async () => {
+  const out = await run({accounts: aliasData([
+    ['other-default', record({account_id: 'synthetic-other-workspace', plan_type: 'team', structure: 'team'})],
+    ['default', record()],
+    ['synthetic-other-workspace', record({account_id: 'synthetic-other-workspace', plan_type: 'business', structure: 'business'})],
+    [accountID, record()]
+  ])});
+  assert.equal(out.calls.checkout, 1);
+  assert.equal(out.diagnostic.accountBinding, 'matched');
+});
+
+test('a paid or active alias cannot be replaced by another alias with missing facts', async () => {
+  const unknown = record({plan_type: undefined}, {});
+  for (const paid of [record({plan_type: 'plus'}, {}), record({plan_type: undefined}, {has_active_subscription: true})]) {
+    for (const [a, b] of [[unknown, paid], [paid, unknown]]) {
+      const out = await run({accounts: aliasData([['default', a], [accountID, b]])});
+      stopped(out, 'already_subscribed', 'already_subscribed');
+      assert.equal(out.diagnostic.plan, 'paid');
+    }
+  }
+});
+
+test('prototype-like alias keys have no special selection behavior', async () => {
+  const out = await run({accounts: aliasData([['__proto__', record()], [accountID, record()]], '__proto__')});
+  assert.equal(out.calls.checkout, 1);
+  assert.equal(out.diagnostic.plan, 'free');
 });
 
 test('session and JWT account conflicts stop before account lookup', async () => {
