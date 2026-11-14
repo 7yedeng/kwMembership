@@ -2513,6 +2513,9 @@ func (p *Processor) RecoverFundingOutcome(ctx context.Context, fulfillmentID str
 		return err
 	}
 	capabilities := client.Capabilities()
+	if policy, ok := client.(provider.FundingReplayPolicy); ok && !policy.AllowsFundingReplay(candidate.Intent.Operation) {
+		return paymentFailure("FUNDING_RECOVERY_UNSUPPORTED", "this card platform does not permit replay of an unknown funding outcome")
+	}
 	if candidate.Intent.Operation == "recharge" && !capabilities.RechargeIdempotent {
 		return paymentFailure("FUNDING_RECOVERY_UNSUPPORTED", "this card platform cannot safely replay recharge requests")
 	}

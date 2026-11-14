@@ -1,0 +1,43 @@
+{
+  "formatVersion": 1,
+  "verifiedAt": "2026-11-14T05:02:50.651190+00:00",
+  "status": "ORIGINAL_RUNTIMES_VERIFIED_BUSINESS_NOT_RUN",
+  "kwMembership": {
+    "repository": "https://github.com/varrge/kwMembership",
+    "commit": "16ceb97fc15f629c8b59df242e1baee2227e4c77",
+    "sourceClean": true,
+    "workerSha256": "375380d8560f64cdfe6e43d7719bfb1b3e5265d4aad8e8dbc75e60aa2144cada",
+    "python": "3.13.5",
+    "playwright": "1.61.0",
+    "chromium": "149.0.7827.55",
+    "pythonTestsPassed": 8,
+    "configuration": "BLOCKED_MISSING_KWREDEEM",
+    "environmentFile": "unmodified upstream example; fixture and live payment disabled; placeholder secret"
+  },
+  "zovo": {
+    "repository": "https://github.com/zovocard/zovo_card_cdk_auto",
+    "commit": "19f41ef347cdb3cce52fde0f2b43e12f70dc6ebe",
+    "sourceClean": true,
+    "node": "v24.15.0",
+    "playwright": "1.60.0",
+    "chrome": "156.0.8078.80",
+    "syntaxChecksPassed": 9,
+    "lockSha256": "acb7413cc174cbebdb061a59991c1f3bf3d24a59a7b3e15b51e6460afe183c43",
+    "missingInputExit": 1,
+    "businessValidation": "NOT_RUN"
+  },
+  "verificationLaunchers": [
+    "Verify.cmd",
+    "zovo-official\\Verify.cmd"
+  ],
+  "browserBinaryReuse": "%LOCALAPPDATA%\\kwMembership-playwright-20261114\\browsers",
+  "wrappers": "New outer install/verification helpers; not upstream business code",
+  "hostPolicy": {
+    "installedExtensionVersion": "1.26.1102.11740",
+    "staticRejectionPathLocated": true,
+    "effectivePolicyMeasured": false
+  },
+  "realWebsiteAccessed": false,
+  "paymentExecuted": false,
+  "subscriptionChanged": false
+}

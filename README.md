@@ -6,6 +6,8 @@
 
 浏览器运行验证：[不同执行面与完整 Chromium + Xvfb 验收](docs/BROWSER_RUNTIME_ACCEPTANCE.md)、[Playwright 官方仓库与状态恢复说明](docs/PLAYWRIGHT_RUNTIME_NOTES.md)。独立 CI job 直接调用生产 `VerifyChrome`，保留正常 sandbox；结果不等同真实账号登录或充值成功。
 
+Windows 部署记录：[现有 Playwright 执行器环境与验证结果](docs/PLAYWRIGHT_WINDOWS_DEPLOYMENT.md)。固定 1.61.0 和配套 Chromium 已安装，复用既有代码测试与三次隔离重启验收；真实账号、账单页与生产 worker 尚未验证。
+
 扩展与登录态研究：[Zovo 官方插件入口、Cookie-Editor 源码与 host restrictions 核验](docs/EXTENSIONS_AND_HOST_ACCESS.md)、[GPT 插件 4.3.21 实包静态审查](docs/ZOVO_EXTENSION_4_3_21_REVIEW.md)。已 Fork Cookie-Editor，并取得桌面 ZIP 核对 manifest 与调用链；插件具备 Cookie 导入后刷新和自动填表，但仍依赖 Zovo 后端，没有 Go 套餐分支或最终付款提交。本轮未导入真实 Session 或付款。
 
 独立的 Go 会员自动化 worker。代码与 kwRedeem 分开维护，但直接读取和写入 kwRedeem 的 SQLite/WAL 数据库，不创建第二套会员数据库。

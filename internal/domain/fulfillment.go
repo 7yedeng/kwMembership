@@ -28,9 +28,10 @@ const (
 )
 
 var (
-	ErrInvalidTargetTier       = errors.New("targetTier 无效")
-	ErrInvalidTransactionRange = errors.New("交易金额范围无效")
-	ErrInvalidMoney            = errors.New("金额无效")
+	ErrInvalidTargetTier          = errors.New("targetTier 无效")
+	ErrInvalidTransactionRange    = errors.New("交易金额范围无效")
+	ErrInvalidTransactionCurrency = errors.New("付款交易匹配需要明确的 USD 价格基准")
+	ErrInvalidMoney               = errors.New("金额无效")
 )
 
 func MembershipTiers() []Tier {
@@ -552,9 +553,12 @@ type CardTransaction struct {
 type PaymentDeltaOptions struct {
 	BeforeAuthIDs []string
 	Tier          Tier
-	MinCents      int64
-	MaxCents      int64
-	Transactions  []CardTransaction
+	// The current price snapshots and tier recognition ranges are USD only.
+	// Callers must state that contract; no currency or conversion is inferred.
+	ExpectedCurrency string
+	MinCents         int64
+	MaxCents         int64
+	Transactions     []CardTransaction
 }
 
 type PaymentMatchOutcome string
@@ -576,6 +580,9 @@ func MatchPaymentTransactionDelta(options PaymentDeltaOptions) (PaymentMatchResu
 	if options.MinCents < 0 || options.MaxCents < options.MinCents {
 		return PaymentMatchResult{}, ErrInvalidTransactionRange
 	}
+	if options.ExpectedCurrency != "USD" {
+		return PaymentMatchResult{}, ErrInvalidTransactionCurrency
+	}
 	minCents, maxCents := options.MinCents, options.MaxCents
 	if recognition, ok := RecognitionRangeForTier(options.Tier); ok {
 		minCents = min(minCents, recognition.MinCents)
@@ -591,8 +598,17 @@ func MatchPaymentTransactionDelta(options PaymentDeltaOptions) (PaymentMatchResu
 		if _, existed := before[transaction.AuthID]; existed || !isOpenAITransaction(transaction) {
 			continue
 		}
+		if transaction.Type == TransactionTypeSettlement && transaction.Status == TransactionStatusComplete &&
+			(transaction.SettleAmountCents == nil || *transaction.SettleAmountCents <= 0) {
+			return PaymentMatchResult{Outcome: PaymentOutcomeUncertain, Reason: "SETTLEMENT_AMOUNT_UNCONFIRMED"}, nil
+		}
 		amount, valid := transactionAmount(transaction)
 		if valid && amount >= minCents && amount <= maxCents {
+			// Currency belongs to the amount selected by transactionAmount. A
+			// settlement amount cannot borrow an authorization's currency.
+			if transactionCurrency(transaction) != options.ExpectedCurrency {
+				return PaymentMatchResult{Outcome: PaymentOutcomeUncertain, Reason: "PAYMENT_CURRENCY_UNCONFIRMED"}, nil
+			}
 			candidates = append(candidates, transaction)
 		}
 	}

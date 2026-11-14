@@ -1,0 +1,41 @@
+{
+  "checkedAt": "2026-11-14T04:57:10.068258+00:00",
+  "upstream": "https://github.com/zovocard/zovo_card_cdk_auto",
+  "expectedCommit": "19f41ef347cdb3cce52fde0f2b43e12f70dc6ebe",
+  "realWebsiteAccessed": false,
+  "credentialsProvided": false,
+  "paymentExecuted": false,
+  "sourceCommit": "19f41ef347cdb3cce52fde0f2b43e12f70dc6ebe",
+  "node": "v24.15.0",
+  "playwright": "Version 1.60.0",
+  "syntaxChecks": {
+    "passed": 9,
+    "files": [
+      "_advance.js",
+      "_fillcard.js",
+      "_inspect.js",
+      "_reload.js",
+      "_state.js",
+      "fill-checkout.js",
+      "lib/address.js",
+      "lib/card.js",
+      "lib/session.js"
+    ]
+  },
+  "missingInputCheck": {
+    "exitCode": 1,
+    "status": "EXPECTED_STOP_BEFORE_BROWSER"
+  },
+  "browserSmoke": {
+    "passed": true,
+    "page": "about:blank",
+    "version": "156.0.8078.80",
+    "channel": "chrome",
+    "kind": "supplemental runtime check"
+  },
+  "lockSha256": "acb7413cc174cbebdb061a59991c1f3bf3d24a59a7b3e15b51e6460afe183c43",
+  "lockUnchanged": true,
+  "sourceClean": true,
+  "runtimeStatus": "PASSED",
+  "businessValidation": "NOT_RUN"
+}

@@ -1,0 +1,37 @@
+{
+  "checkedAt": "2026-11-14T05:02:50.651190+00:00",
+  "upstream": "https://github.com/varrge/kwMembership",
+  "expectedCommit": "16ceb97fc15f629c8b59df242e1baee2227e4c77",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "python": "3.13.5",
+  "scope": "upstream unit tests and supplemental about:blank runtime check",
+  "realWebsiteAccessed": false,
+  "workerStarted": false,
+  "paymentExecuted": false,
+  "sourceCommit": "16ceb97fc15f629c8b59df242e1baee2227e4c77",
+  "trackedFiles": 88,
+  "sourceClean": true,
+  "workerBinarySha256": "375380d8560f64cdfe6e43d7719bfb1b3e5265d4aad8e8dbc75e60aa2144cada",
+  "workerBinaryFormat": "PE",
+  "embeddedGoVersion": "go1.26.11",
+  "playwright": "1.61.0",
+  "pythonTests": {
+    "passed": 8,
+    "failed": 0,
+    "skipped": 0
+  },
+  "browserSmoke": {
+    "passed": true,
+    "page": "about:blank",
+    "version": "149.0.7827.55",
+    "kind": "supplemental runtime check",
+    "profileRemoved": true
+  },
+  "configuration": {
+    "status": "BLOCKED_MISSING_KWREDEEM",
+    "exitCode": 1,
+    "databaseCreated": false
+  },
+  "sourceCleanAfterVerification": true,
+  "runtimeStatus": "PASSED"
+}

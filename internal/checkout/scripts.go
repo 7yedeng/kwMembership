@@ -188,7 +188,7 @@ const inspectFrameJS = `(() => {
   };
 })()`
 
-const fillFrameFunction = `(async (fragment) => {
+const fillFrameFunction = `(async (fragment, readOnly = false, scope = null) => {
   const allowed = ['https://chatgpt.com', 'https://pay.openai.com', 'https://js.stripe.com'];
   const refused = () => ({accepted:false,filled:[],rejected:[]});
   if (!allowed.includes(location.origin)) return refused();
@@ -230,11 +230,13 @@ const fillFrameFunction = `(async (fragment) => {
   const emptyPermitted = (key, element) => optionalBilling.has(key) && element.required !== true &&
     element.getAttribute('aria-required')?.trim().toLowerCase() !== 'true';
   const present = new Set(), failed = new Set();
-  for (const key of Object.keys(selectors)) {
+  const keys = Object.keys(selectors).filter(key => scope === null || scope.includes(key));
+  for (const key of keys) {
     const value = fragment?.[key];
     const element = find(key); if (!element) continue;
     present.add(key);
     if (typeof value !== 'string' || (!value.trim() && !emptyPermitted(key, element)) || !editable(element)) { failed.add(key); continue; }
+    if (readOnly) continue;
     try {
       let candidate = value;
       if (element instanceof HTMLSelectElement && value.trim()) {
@@ -261,7 +263,7 @@ const fillFrameFunction = `(async (fragment) => {
   });
   if (!rendered || !allowed.includes(location.origin)) return refused();
   const filled = [], rejected = [];
-  for (const key of Object.keys(selectors)) {
+  for (const key of keys) {
     const value = fragment?.[key];
     const element = find(key);
     if (!element && !present.has(key)) continue;
@@ -273,6 +275,12 @@ const fillFrameFunction = `(async (fragment) => {
   // Never return card, security-code or billing values to the Python caller.
   return {accepted:true,filled,rejected};
 })`
+
+// The second argument selects the exact same field/format/validity contract
+// without a setter or dispatched input/change event.
+const verifyFrameFunction = `(async (fragment) => await ` + fillFrameFunction + `(fragment, true))`
+
+const fillBillingFrameFunction = `(async (fragment) => await ` + fillFrameFunction + `(fragment, false, ['billingName','billingLine1','billingLine2','billingCity','billingState','billingCountry','billingPostal']))`
 
 const activateControlFunction = `(controlId => {
   const selectors = {

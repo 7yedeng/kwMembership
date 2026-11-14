@@ -1,0 +1,63 @@
+{
+  "checkedAt": "2026-11-14T04:57:28.468239+00:00",
+  "scope": "read-only installed extension source; no browser storage or policy mutation",
+  "installed": [
+    {
+      "browser": "Chrome",
+      "extensionId": "hehggadaopoacecdllhhajmbjkdcmajg",
+      "version": "1.26.1102.11740",
+      "files": [
+        {
+          "file": "background.js",
+          "sha256": "3ccdc7a853700c9fdd8acf8356db33ef18615d17c8a6d2b0054cafe65eb6c7b9",
+          "presentMarkers": [
+            "getChatGptAccessPolicy",
+            "browser-extension-chatgpt-access",
+            "allow_all_chatgpt_pages:!1"
+          ]
+        },
+        {
+          "file": "chunks/js-kernel-host-COXQa-ka.js",
+          "sha256": "5ea78ade270d71bb6ffcec719207ad02bf63db30d0c16058f24a74a7f9f3682a",
+          "presentMarkers": [
+            "hostUrl:async",
+            "runtime.assertBrowserUrlAllowed",
+            "getChatGptAccessPolicy",
+            "The standalone Chrome extension cannot access this ChatGPT page.",
+            "The browser host blocked this URL."
+          ]
+        }
+      ]
+    },
+    {
+      "browser": "Edge",
+      "extensionId": "hehggadaopoacecdllhhajmbjkdcmajg",
+      "version": "1.26.1102.11740",
+      "files": [
+        {
+          "file": "background.js",
+          "sha256": "3ccdc7a853700c9fdd8acf8356db33ef18615d17c8a6d2b0054cafe65eb6c7b9",
+          "presentMarkers": [
+            "getChatGptAccessPolicy",
+            "browser-extension-chatgpt-access",
+            "allow_all_chatgpt_pages:!1"
+          ]
+        },
+        {
+          "file": "chunks/js-kernel-host-COXQa-ka.js",
+          "sha256": "5ea78ade270d71bb6ffcec719207ad02bf63db30d0c16058f24a74a7f9f3682a",
+          "presentMarkers": [
+            "hostUrl:async",
+            "runtime.assertBrowserUrlAllowed",
+            "getChatGptAccessPolicy",
+            "The standalone Chrome extension cannot access this ChatGPT page.",
+            "The browser host blocked this URL."
+          ]
+        }
+      ]
+    }
+  ],
+  "effectivePolicyMeasured": false,
+  "realWebsiteAccessed": false,
+  "configurationModified": false
+}

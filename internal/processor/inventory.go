@@ -356,7 +356,7 @@ func (p *Processor) schedulePlatformInventory(ctx context.Context, key, mode str
 
 func (p *Processor) discoverInventoryPage(ctx context.Context, client provider.CardPlatform, run inventoryRun, now time.Time) error {
 	contractCode := "CARD_PLATFORM_CONTRACT_DRIFT"
-	if client.Key() == provider.CardPlatformSpaceX {
+	if provider.CardPlatformKind(client) == provider.CardPlatformSpaceX {
 		contractCode = "SPACEXCARD_CONTRACT_DRIFT"
 	}
 	if run.NextPage < 1 || run.NextPage > inventoryMaxPages {
@@ -483,14 +483,10 @@ func collapseProviderTransactions(items []provider.Transaction) []collapsedTrans
 		}
 		if tx.AuthAmountCents != nil && *tx.AuthAmountCents > 0 {
 			current.Transaction.AuthAmountCents = tx.AuthAmountCents
-		}
-		if tx.AuthCurrency != "" {
 			current.Transaction.AuthCurrency = tx.AuthCurrency
 		}
 		if tx.SettleAmountCents != nil && *tx.SettleAmountCents > 0 {
 			current.Transaction.SettleAmountCents = tx.SettleAmountCents
-		}
-		if tx.SettleCurrency != "" {
 			current.Transaction.SettleCurrency = tx.SettleCurrency
 		}
 		if tx.MerchantNormalized == "OPENAI" {
@@ -612,9 +608,9 @@ func (p *Processor) reconcileInventoryCard(ctx context.Context, client provider.
         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(card_id,auth_id) DO UPDATE SET
           auth_time=COALESCE(excluded.auth_time,managed_card_transactions.auth_time),
           auth_amount=CASE WHEN excluded.auth_amount>0 THEN excluded.auth_amount ELSE managed_card_transactions.auth_amount END,
-          auth_currency=COALESCE(excluded.auth_currency,managed_card_transactions.auth_currency),
+          auth_currency=CASE WHEN excluded.auth_amount>0 THEN excluded.auth_currency ELSE managed_card_transactions.auth_currency END,
           settle_amount=CASE WHEN excluded.settle_amount>0 THEN excluded.settle_amount ELSE managed_card_transactions.settle_amount END,
-          settle_currency=COALESCE(excluded.settle_currency,managed_card_transactions.settle_currency),type=excluded.type,status=excluded.status,
+          settle_currency=CASE WHEN excluded.settle_amount>0 THEN excluded.settle_currency ELSE managed_card_transactions.settle_currency END,type=excluded.type,status=excluded.status,
           merchant_normalized=CASE WHEN excluded.merchant_normalized='OPENAI' THEN 'OPENAI' ELSE managed_card_transactions.merchant_normalized END,
           authorization_seen=MAX(managed_card_transactions.authorization_seen,excluded.authorization_seen),
           settlement_seen=MAX(managed_card_transactions.settlement_seen,excluded.settlement_seen),refund_seen=MAX(managed_card_transactions.refund_seen,excluded.refund_seen),
